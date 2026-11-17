@@ -547,3 +547,39 @@ function bindEvents() {
 
 bindEvents();
 renderAll();
+
+/* ---------- فاز ۳: PWA ---------- */
+
+function registerServiceWorker() {
+  // فقط روی http(s) — در حالت file:// سرویس‌کار کار نمی‌کند
+  if (!("serviceWorker" in navigator) || !/^https?:$/.test(location.protocol)) return;
+  navigator.serviceWorker.register("sw.js").then(
+    (reg) => {
+      reg.addEventListener("updatefound", () => {
+        const worker = reg.installing;
+        worker?.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller) {
+            toast("نسخه‌ی جدید دوخت‌یار آماده است؛ با بارگذاری مجدد اعمال می‌شود.");
+          }
+        });
+      });
+    },
+    () => {
+      // ثبت سرویس‌کار شکست خورد؛ برنامه بدون کار آفلاین ادامه می‌دهد
+    }
+  );
+}
+
+function bindConnectionStatus() {
+  const show = () => {
+    const offline = !navigator.onLine;
+    document.body.classList.toggle("is-offline", offline);
+    if (offline) toast("اتصال اینترنت قطع است؛ تغییرات روی این دستگاه ذخیره می‌شوند.");
+  };
+  window.addEventListener("offline", show);
+  window.addEventListener("online", () => toast("اتصال برقرار شد."));
+  if (!navigator.onLine) show();
+}
+
+registerServiceWorker();
+bindConnectionStatus();

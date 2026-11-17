@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#101a35"/>
+  <radialGradient id="g" cx="50%" cy="40%" r="60%">
+    <stop offset="0" stop-color="#2a3d66"/><stop offset="1" stop-color="#101a35"/>
+  </radialGradient>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <!-- حلقه‌ی سوزن و نخ: نماد دوخت -->
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#d6b48d" stroke-width="22"/>
+  <path d="M256 150 C 300 190, 212 230, 256 270 S 300 330, 256 362" fill="none" stroke="#f4dfcc" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="256" cy="150" r="14" fill="#f4dfcc"/>
+</svg>

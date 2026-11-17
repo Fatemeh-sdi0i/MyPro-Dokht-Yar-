@@ -1,0 +1,92 @@
+/*
+ * Service Worker دوخت‌یار — فاز ۳
+ * استراتژی:
+ *  - پوسته‌ی برنامه (HTML/CSS/JS/آیکون‌ها) هنگام نصب کش می‌شود (precache).
+ *  - ناوبری: شبکه‌ی اول با کش به‌عنوان پشتیبان، تا همیشه آخرین نسخه‌ی ممکن باز شود.
+ *  - فایل‌های استاتیک خودِ سایت: کش اول (cache-first) با به‌روزرسانی در پس‌زمینه.
+ *  - فونت‌های گوگل: stale-while-revalidate.
+ *
+ * هنگام انتشار نسخه‌ی جدید، مقدار VERSION را افزایش دهید تا کش قدیمی حذف شود.
+ * مسیرها نسبی هستند تا روی GitHub Pages زیرمسیر (/repo/) هم کار کنند.
+ */
+const VERSION = "v3.0.0";
+const CACHE = `dokhtyar-${VERSION}`;
+const RUNTIME = `dokhtyar-runtime-${VERSION}`;
+
+const APP_SHELL = [
+  "./",
+  "./index.html",
+  "./css/styles.css",
+  "./js/data.js",
+  "./js/app.js",
+  "./manifest.webmanifest",
+  "./icons/icon.svg",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
+  "./icons/icon-maskable-512.png",
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k.startsWith("dokhtyar-") && k !== CACHE && k !== RUNTIME).map((k) => caches.delete(k)));
+      await self.clients.claim();
+    })()
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+
+  // ناوبری (صفحه‌ها): شبکه اول، در صورت آفلاین بودن نسخه‌ی کش‌شده
+  if (req.mode === "navigate") {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put("./index.html", copy));
+          return res;
+        })
+        .catch(() => caches.match("./index.html"))
+    );
+    return;
+  }
+
+  // فونت‌های گوگل
+  if (url.origin === "https://fonts.googleapis.com" || url.origin === "https://fonts.gstatic.com") {
+    event.respondWith(
+      caches.open(RUNTIME).then((cache) =>
+        cache.match(req).then((cached) => {
+          const network = fetch(req).then((res) => {
+            cache.put(req, res.clone());
+            return res;
+          }).catch(() => cached);
+          return cached || network;
+        })
+      )
+    );
+    return;
+  }
+
+  // دارایی‌های خود سایت: کش اول با به‌روزرسانی در پس‌زمینه
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      caches.match(req).then((cached) => {
+        const network = fetch(req).then((res) => {
+          if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone()));
+          return res;
+        }).catch(() => cached);
+        return cached || network;
+      })
+    );
+  }
+});

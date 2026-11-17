@@ -1,0 +1,19 @@
+{
+  "name": "دوخت‌یار؛ مدیریت هوشمند مزون",
+  "short_name": "دوخت‌یار",
+  "description": "مدیریت سفارش، مشتری، همکاران و امور مالی مزون و خیاطی",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101a35",
+  "theme_color": "#101a35",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
