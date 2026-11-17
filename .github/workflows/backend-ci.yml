@@ -3,7 +3,7 @@ name: Backend CI
 
 on:
   push:
-    branches: [phase-4-backend]
+    branches: [phase-4-backend, phase-4-frontend]
   pull_request:
     branches: [main]
 
