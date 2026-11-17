@@ -3,7 +3,7 @@ name: Backend CI
 
 on:
   push:
-    branches: [phase-4-backend]
+    branches: [phase-4-backend, api-connection]
   pull_request:
     branches: [main]
 
@@ -76,3 +76,73 @@ jobs:
       - name: Run API tests
         working-directory: backend
         run: npm test
+
+  e2e:
+    name: Browser tests (server mode)
+    runs-on: ubuntu-latest
+    needs: api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/dokhtyar_e2e
+      E2E_BASE: http://127.0.0.1:3000
+      E2E_EMAIL: admin@e2e.test
+      E2E_PASSWORD: e2e-admin-password-123
+      ADMIN_PASSWORD: e2e-admin-password-123
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Create database, migrate and create admin
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -qc "CREATE DATABASE dokhtyar_e2e"
+          ./backend/db/migrate.sh
+          cd backend
+          npm install --no-audit --no-fund
+          node scripts/create-admin.js --email admin@e2e.test --name "مدیر تستی" --shop "مزون تستی"
+
+      - name: Start server with static frontend
+        working-directory: backend
+        env:
+          NODE_ENV: test
+          HOST: 127.0.0.1
+          PORT: 3000
+          STATIC_DIR: ${{ github.workspace }}
+        run: |
+          node src/server.js > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/api/v1/healthz && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/server.log"
+          exit 1
+
+      - name: Install browser test dependencies
+        working-directory: tests/e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run browser tests
+        working-directory: tests/e2e
+        run: npm test
+
+      - name: Show server log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/server.log" || true

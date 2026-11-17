@@ -4,7 +4,7 @@
  * در فاز بعدی (بک‌اند) این بخش با API جایگزین می‌شود.
  */
 
-const TODAY_JALALI = "۱۴۰۵/۰۸/۱۶";
+const TODAY_JALALI = "۱۴۰۵/۰۸/۲۶"; // امروز ۱۴۰۵/۰۸/۲۶ = ۲۰۲۶-۱۱-۱۷ (کنترل‌شده با js/jalali.js)
 const STORAGE_KEY = "dokhtyar.v2";
 
 const ORDER_STATUS = {

@@ -5,8 +5,9 @@ const customersRoutes = require('./routes/customers');
 const ordersRoutes = require('./routes/orders');
 const businessRoutes = require('./routes/business');
 const { HttpError } = require('./util');
+const { serveStatic } = require('./static');
 
-function buildApp({ db, loginMax, trustProxy = process.env.TRUST_PROXY === '1', logger = false }) {
+function buildApp({ db, loginMax, trustProxy = process.env.TRUST_PROXY === '1', logger = false, staticDir = process.env.STATIC_DIR }) {
   const app = Fastify({ logger, bodyLimit: 64 * 1024, trustProxy });
 
   // خطاها به شکل یکنواخت: { error, message }
@@ -43,6 +44,13 @@ function buildApp({ db, loginMax, trustProxy = process.env.TRUST_PROXY === '1', 
     priv.register(ordersRoutes, { db });
     priv.register(businessRoutes, { db });
   }, { prefix: '/api/v1' });
+
+  // اختیاری: سرو فایل‌های سایت از همان مبدأ API (برای آزمون و استقرار ساده)
+  if (staticDir) {
+    const handler = serveStatic(staticDir);
+    app.get('/', handler);
+    app.get('/*', handler);
+  }
 
   return app;
 }

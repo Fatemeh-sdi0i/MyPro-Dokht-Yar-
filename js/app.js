@@ -1,13 +1,17 @@
 /*
- * منطق رابط کاربری دوخت‌یار — فاز ۲
- * داده‌ها از js/data.js (state و saveState) خوانده و ذخیره می‌شوند.
+ * منطق رابط کاربری دوخت‌یار
+ * دو حالت:
+ *   - محلی (پیش‌فرض، REMOTE=false): داده‌ها در localStorage همین مرورگر.
+ *   - سرور (REMOTE=true): داده‌ها از API خوانده و به API نوشته می‌شوند.
  */
 
 let activeOrderFilter = "all";
 let activeTxFilter = "all";
+const REMOTE = !!window.DOKHTYAR_CONFIG.remote;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+const pad2 = (n) => String(n).padStart(2, "0");
 
 function toast(msg) {
   const t = $("#toast");
@@ -18,6 +22,7 @@ function toast(msg) {
 }
 
 function persist() {
+  if (REMOTE) return;
   if (!saveState()) toast("ذخیره‌سازی در این مرورگر امکان‌پذیر نیست؛ تغییرات فقط تا بستن صفحه می‌مانند.");
 }
 
@@ -28,7 +33,6 @@ function go(page) {
   renderPage(page);
 }
 
-// فقط بخش فعال را دوباره می‌سازیم
 function renderPage(page) {
   const renderers = {
     dashboard: renderDashboard,
@@ -51,6 +55,111 @@ function renderAll() {
   renderReports();
   renderSettings();
   applyOwnerBinding();
+  $("#logoutBtn").hidden = !REMOTE;
+  $("#resetBtn").hidden = REMOTE;
+}
+
+/* ---------- ورود و همگام‌سازی با سرور ---------- */
+
+function showGate() { $("#loginGate").hidden = false; }
+function hideGate() { $("#loginGate").hidden = true; }
+
+const TIER_LABEL = { regular: "معمولی", active: "فعال", vip: "VIP" };
+
+// تاریخ میلادی ISO → نمایش شمسی با ارقام فارسی
+function faDate(iso) {
+  if (!iso) return "تعیین نشده";
+  return toFaDigits(Jalali.isoToJalaliString(iso));
+}
+
+function mapOrder(o) {
+  return {
+    uuid: o.id,
+    customer_id: o.customer_id,
+    id: "۱۴۰۵-" + toFaDigits(pad2(o.order_no).padStart(3, "0")),
+    customer: o.customer_name,
+    type: o.type,
+    desc: o.description,
+    created: faDate(o.created_on),
+    due: o.due_on ? faDate(o.due_on) : "تعیین نشده",
+    status: o.status,
+    price: o.price,
+  };
+}
+
+// فقط برای نمایش؛ منبع حقیقت سرور است
+async function loadRemote() {
+  const [cust, ords, staff, txs, settings] = await Promise.all([
+    Api.customers(), Api.orders(), Api.staff(), Api.transactions(), Api.settings(),
+  ]);
+  const orders = ords.items.map(mapOrder);
+  const lastByCustomer = {};
+  orders.forEach((o) => {
+    const prev = lastByCustomer[o.customer_id];
+    if (!prev || o.created > prev) lastByCustomer[o.customer_id] = o.created;
+  });
+  state.orders = orders;
+  state.customers = cust.items.map((c) => ({
+    uuid: c.id,
+    name: c.name,
+    phone: toFaDigits(c.phone || ""),
+    count: c.order_count,
+    last: lastByCustomer[c.id] || "—",
+    state: TIER_LABEL[c.tier] || "معمولی",
+    note: c.note || "",
+  }));
+  state.staff = staff.items.map((s) => ({
+    id: s.id, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), active: s.active,
+  }));
+  state.transactions = txs.items.map((t) => ({
+    id: t.id, date: faDate(t.occurred_on), kind: t.kind, category: t.category, amount: t.amount, note: t.note,
+  }));
+  state.settings = {
+    shopName: settings.shop_name,
+    ownerName: settings.owner_name,
+    phone: toFaDigits(settings.phone || ""),
+    address: settings.address || "",
+    currency: settings.currency || "تومان",
+  };
+}
+
+// اجرای یک عملیات سرور، سپس خواندن دوباره‌ی داده‌ها و رندر
+async function run(action, okMsg) {
+  try {
+    await action();
+    await loadRemote();
+    renderAll();
+    if (okMsg) toast(okMsg);
+    return true;
+  } catch (err) {
+    if (err.status === 401) {
+      showGate();
+      toast("نشست شما پایان یافته است؛ دوباره وارد شوید.");
+    } else {
+      toast(err.message || "خطا در ارتباط با سرور");
+    }
+    return false;
+  }
+}
+
+async function submitLogin(e) {
+  e.preventDefault();
+  const d = new FormData(e.target);
+  $("#loginError").textContent = "";
+  try {
+    await Api.login(String(d.get("email")).trim(), String(d.get("password")));
+    await loadRemote();
+    hideGate();
+    renderAll();
+    e.target.reset();
+  } catch (err) {
+    $("#loginError").textContent = err.message || "ورود ناموفق بود";
+  }
+}
+
+async function logout() {
+  try { await Api.logout(); } catch (err) { /* ادامه می‌دهیم */ }
+  location.reload();
 }
 
 /* ---------- داشبورد ---------- */
@@ -97,7 +206,7 @@ function renderUpcoming() {
 function matchesOrderFilter(order) {
   if (activeOrderFilter === "all") return true;
   if (activeOrderFilter === "sewing" || activeOrderFilter === "repair") return order.type === activeOrderFilter;
-  return order.status === activeOrderFilter; // progress | delivered
+  return order.status === activeOrderFilter;
 }
 
 function renderOrders() {
@@ -131,14 +240,19 @@ function renderOrders() {
       .join("") || '<tr><td colspan="8">سفارشی با این مشخصات پیدا نشد.</td></tr>';
 }
 
-function changeOrderStatus(idx) {
+async function changeOrderStatus(idx) {
   const o = state.orders[idx];
   if (!o) return;
-  o.status = NEXT_STATUS[o.status];
+  const to = NEXT_STATUS[o.status];
+  if (REMOTE) {
+    await run(() => Api.setOrderStatus(o.uuid, to), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
+    return;
+  }
+  o.status = to;
   persist();
   renderOrders();
   renderDashboard();
-  toast("وضعیت سفارش به «" + ORDER_STATUS[o.status] + "» تغییر کرد.");
+  toast("وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
 }
 
 /* ---------- مشتریان ---------- */
@@ -198,35 +312,23 @@ function renderStaff() {
           <td>${esc(s.role)}</td>
           <td>${esc(s.phone)}</td>
           <td><span class="status ${s.active ? "delivered" : "waiting"}">${s.active ? "فعال" : "غیرفعال"}</span></td>
-          <td><button class="chip" data-toggle-staff="${s.id}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button></td>
+          <td><button class="chip" data-toggle-staff="${esc(s.id)}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button></td>
         </tr>`
       )
       .join("") || '<tr><td colspan="6">همکاری ثبت نشده است.</td></tr>';
 }
 
-function toggleStaff(id) {
-  const s = state.staff.find((x) => x.id === id);
+async function toggleStaff(id) {
+  const s = state.staff.find((x) => String(x.id) === String(id));
   if (!s) return;
+  if (REMOTE) {
+    await run(() => Api.patchStaff(s.id, { active: !s.active }), s.active ? "همکار غیرفعال شد." : "همکار فعال شد.");
+    return;
+  }
   s.active = !s.active;
   persist();
   renderStaff();
   toast(s.active ? "همکار فعال شد." : "همکار غیرفعال شد.");
-}
-
-function submitStaff(e) {
-  e.preventDefault();
-  const d = new FormData(e.target);
-  state.staff.unshift({
-    id: nextId(state.staff),
-    name: String(d.get("name")).trim(),
-    role: String(d.get("role") || "").trim() || "—",
-    phone: toFaDigits(String(d.get("phone") || "").trim()),
-    active: true,
-  });
-  persist();
-  closeModal();
-  go("coworkers");
-  toast("همکار جدید اضافه شد.");
 }
 
 /* ---------- امور مالی ---------- */
@@ -242,10 +344,9 @@ function renderFinance() {
   $("#finExpense").textContent = formatMoney(expense);
   $("#finBalance").textContent = formatMoney(balance);
 
-  const rows = state.transactions
-    .filter((t) => activeTxFilter === "all" || t.kind === activeTxFilter)
-    .slice()
-    .sort((a, b) => b.id - a.id);
+  const filtered = state.transactions.filter((t) => activeTxFilter === "all" || t.kind === activeTxFilter);
+  // محلی: جدیدترین اول (آخرین افزوده‌شده‌ها در انتها هستند)؛ سرور از قبل مرتب است
+  const rows = REMOTE ? filtered : filtered.slice().reverse();
 
   $("#txBody").innerHTML =
     rows
@@ -256,41 +357,23 @@ function renderFinance() {
           <td>${esc(t.category)}</td>
           <td>${esc(t.note) || "—"}</td>
           <td>${formatMoney(t.amount)}</td>
-          <td><button class="chip" data-delete-tx="${t.id}">حذف</button></td>
+          <td><button class="chip" data-delete-tx="${esc(t.id)}">حذف</button></td>
         </tr>`
       )
       .join("") || '<tr><td colspan="6">تراکنشی برای نمایش وجود ندارد.</td></tr>';
 }
 
-function deleteTransaction(id) {
+async function deleteTransaction(id) {
   if (!confirm("این تراکنش حذف شود؟")) return;
-  state.transactions = state.transactions.filter((t) => t.id !== id);
+  if (REMOTE) {
+    await run(() => Api.deleteTransaction(id), "تراکنش حذف شد.");
+    return;
+  }
+  state.transactions = state.transactions.filter((t) => String(t.id) !== String(id));
   persist();
   renderFinance();
   renderReports();
   toast("تراکنش حذف شد.");
-}
-
-function submitTransaction(e) {
-  e.preventDefault();
-  const d = new FormData(e.target);
-  const amount = Number(toEnDigits(d.get("amount")));
-  if (!(amount > 0)) {
-    toast("مبلغ باید بزرگ‌تر از صفر باشد.");
-    return;
-  }
-  state.transactions.push({
-    id: nextId(state.transactions),
-    date: toFaDigits(String(d.get("date") || "").trim()) || TODAY_JALALI,
-    kind: d.get("kind"),
-    category: d.get("category"),
-    amount,
-    note: String(d.get("note") || "").trim(),
-  });
-  persist();
-  closeModal();
-  go("finance");
-  toast("تراکنش ثبت شد.");
 }
 
 /* ---------- گزارش‌ها ---------- */
@@ -330,7 +413,7 @@ function renderReports() {
     <div class="customer-stats">
       <article class="stat-card navy"><label>کل سفارش‌ها</label><strong>${toFaDigits(total)}</strong></article>
       <article class="stat-card cream"><label>تحویل‌شده</label><strong>${toFaDigits(delivered)}</strong></article>
-      <article class="stat-card cream"><label>درآمد تحویل‌شده (${state.settings.currency})</label><strong class="small-num">${formatMoney(revenue)}</strong></article>
+      <article class="stat-card cream"><label>درآمد تحویل‌شده (${esc(state.settings.currency)})</label><strong class="small-num">${formatMoney(revenue)}</strong></article>
       <article class="stat-card navy"><label>میانگین هر سفارش</label><strong class="small-num">${formatMoney(avg)}</strong></article>
     </div>
     <div class="dashboard-grid">
@@ -356,13 +439,24 @@ function applyOwnerBinding() {
   $$('[data-bind="ownerInitial"]').forEach((el) => (el.textContent = name[0] || "م"));
 }
 
-function submitSettings(e) {
+async function submitSettings(e) {
   e.preventDefault();
   const d = new FormData(e.target);
+  const phoneRaw = String(d.get("phone") || "").trim();
+  if (REMOTE) {
+    await run(() => Api.saveSettings({
+      shop_name: String(d.get("shopName") || "").trim() || undefined,
+      owner_name: String(d.get("ownerName") || "").trim(),
+      phone: phoneRaw,
+      address: String(d.get("address") || "").trim(),
+      currency: String(d.get("currency") || "").trim() || undefined,
+    }), "تنظیمات ذخیره شد.");
+    return;
+  }
   state.settings = {
     shopName: String(d.get("shopName") || "").trim() || SEED.settings.shopName,
     ownerName: String(d.get("ownerName") || "").trim() || SEED.settings.ownerName,
-    phone: toFaDigits(String(d.get("phone") || "").trim()),
+    phone: toFaDigits(phoneRaw),
     address: String(d.get("address") || "").trim(),
     currency: String(d.get("currency") || "").trim() || "تومان",
   };
@@ -372,8 +466,15 @@ function submitSettings(e) {
   toast("تنظیمات ذخیره شد.");
 }
 
-function exportData() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+async function exportData() {
+  let payload;
+  if (REMOTE) {
+    try { payload = await Api.exportJson(); }
+    catch (err) { toast(err.message || "دانلود پشتیبان انجام نشد"); return; }
+  } else {
+    payload = state;
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -385,9 +486,9 @@ function exportData() {
 }
 
 function resetData() {
+  if (REMOTE) return;
   if (!confirm("همه‌ی داده‌ها به حالت نمونه برگردند؟ این کار قابل بازگشت نیست.")) return;
-  const seed = cloneSeed();
-  Object.assign(state, seed);
+  Object.assign(state, cloneSeed());
   persist();
   renderAll();
   toast("داده‌ها به حالت اولیه برگشتند.");
@@ -413,18 +514,44 @@ function closeModal() {
 
 /* ---------- ثبت داده‌ی جدید ---------- */
 
-function submitOrder(e) {
+// تاریخ شمسی فرم → ISO؛ خالی = null؛ نامعتبر = undefined
+function formDateToIso(value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  const iso = Jalali.jalaliStringToISO(v);
+  return iso || undefined;
+}
+
+async function submitOrder(e) {
   e.preventDefault();
   const d = new FormData(e.target);
+  const customerName = String(d.get("customer")).trim();
+  const description = String(d.get("description")).trim();
+  const type = d.get("type");
+  const status = d.get("status");
+  const price = Number(toEnDigits(d.get("price") || "0")) || 0;
+
+  if (REMOTE) {
+    const dueIso = formDateToIso(d.get("due"));
+    if (dueIso === undefined) { toast("تاریخ تحویل باید به شکل ۱۴۰۵/۰۹/۲۰ باشد."); return; }
+    const ok = await run(async () => {
+      const found = state.customers.find((c) => c.name === customerName);
+      const customerId = found ? found.uuid : (await Api.createCustomer({ name: customerName })).id;
+      await Api.createOrder({ customer_id: customerId, type, description, price, due_on: dueIso, status });
+    }, "سفارش جدید با موفقیت ثبت شد.");
+    if (ok) { closeModal(); go("orders"); }
+    return;
+  }
+
   state.orders.unshift({
     id: nextOrderId(),
-    customer: String(d.get("customer")).trim(),
-    type: d.get("type"),
-    desc: String(d.get("description")).trim(),
+    customer: customerName,
+    type,
+    desc: description,
     created: TODAY_JALALI,
     due: toFaDigits(String(d.get("due") || "").trim()) || "تعیین نشده",
-    status: d.get("status"),
-    price: Number(toEnDigits(d.get("price") || "0")) || 0,
+    status,
+    price,
   });
   persist();
   closeModal();
@@ -433,26 +560,91 @@ function submitOrder(e) {
   toast("سفارش جدید با موفقیت ثبت شد.");
 }
 
-function submitCustomer(e) {
+async function submitCustomer(e) {
   e.preventDefault();
   const d = new FormData(e.target);
-  state.customers.unshift({
-    name: String(d.get("name")).trim(),
-    phone: toFaDigits(String(d.get("phone")).trim()),
-    count: 0,
-    last: "—",
-    state: "فعال",
-    note: String(d.get("note") || "").trim(),
-  });
+  const name = String(d.get("name")).trim();
+  const phone = String(d.get("phone")).trim();
+  const note = String(d.get("note") || "").trim();
+
+  if (REMOTE) {
+    const ok = await run(() => Api.createCustomer({ name, phone, note }), "مشتری جدید اضافه شد.");
+    if (ok) { closeModal(); go("customers"); }
+    return;
+  }
+
+  state.customers.unshift({ name, phone: toFaDigits(phone), count: 0, last: "—", state: "فعال", note });
   persist();
   closeModal();
   go("customers");
   toast("مشتری جدید اضافه شد.");
 }
 
+async function submitStaff(e) {
+  e.preventDefault();
+  const d = new FormData(e.target);
+  const name = String(d.get("name")).trim();
+  const role = String(d.get("role") || "").trim();
+  const phone = String(d.get("phone") || "").trim();
+
+  if (REMOTE) {
+    const ok = await run(() => Api.createStaff({ name, role_title: role, phone }), "همکار جدید اضافه شد.");
+    if (ok) { closeModal(); go("coworkers"); }
+    return;
+  }
+
+  state.staff.unshift({
+    id: nextId(state.staff), name, role: role || "—", phone: toFaDigits(phone), active: true,
+  });
+  persist();
+  closeModal();
+  go("coworkers");
+  toast("همکار جدید اضافه شد.");
+}
+
+async function submitTransaction(e) {
+  e.preventDefault();
+  const d = new FormData(e.target);
+  const amount = Number(toEnDigits(d.get("amount")));
+  if (!(amount > 0)) {
+    toast("مبلغ باید بزرگ‌تر از صفر باشد.");
+    return;
+  }
+
+  if (REMOTE) {
+    const dayIso = formDateToIso(d.get("date"));
+    if (dayIso === undefined) { toast("تاریخ باید به شکل ۱۴۰۵/۰۸/۱۶ باشد."); return; }
+    const ok = await run(() => Api.createTransaction({
+      kind: d.get("kind"),
+      category: d.get("category"),
+      amount,
+      occurred_on: dayIso,
+      note: String(d.get("note") || "").trim(),
+    }), "تراکنش ثبت شد.");
+    if (ok) { closeModal(); go("finance"); }
+    return;
+  }
+
+  state.transactions.push({
+    id: nextId(state.transactions),
+    date: toFaDigits(String(d.get("date") || "").trim()) || TODAY_JALALI,
+    kind: d.get("kind"),
+    category: d.get("category"),
+    amount,
+    note: String(d.get("note") || "").trim(),
+  });
+  persist();
+  closeModal();
+  go("finance");
+  toast("تراکنش ثبت شد.");
+}
+
 /* ---------- اتصال رویدادها ---------- */
 
 function bindEvents() {
+  $("#loginForm").addEventListener("submit", submitLogin);
+  $("#logoutBtn").addEventListener("click", logout);
+
   $$(".nav-item").forEach((b) => b.addEventListener("click", () => go(b.dataset.page)));
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => go(b.dataset.goto)));
 
@@ -470,12 +662,12 @@ function bindEvents() {
 
   $("#staffBody").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-toggle-staff]");
-    if (btn) toggleStaff(+btn.dataset.toggleStaff);
+    if (btn) toggleStaff(btn.dataset.toggleStaff);
   });
 
   $("#txBody").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-delete-tx]");
-    if (btn) deleteTransaction(+btn.dataset.deleteTx);
+    if (btn) deleteTransaction(btn.dataset.deleteTx);
   });
 
   $$(".chip[data-filter]").forEach((b) =>
@@ -545,13 +737,31 @@ function bindEvents() {
   });
 }
 
-bindEvents();
-renderAll();
+async function boot() {
+  bindEvents();
+  if (!REMOTE) {
+    renderAll();
+    return;
+  }
+  // حالت سرور: داده‌ی نمونه‌ی محلی نمایش داده نمی‌شود
+  state.orders = [];
+  state.customers = [];
+  state.staff = [];
+  state.transactions = [];
+  renderAll();
+  try {
+    await Api.me();
+    await loadRemote();
+    hideGate();
+  } catch (err) {
+    showGate();
+  }
+  renderAll();
+}
 
 /* ---------- فاز ۳: PWA ---------- */
 
 function registerServiceWorker() {
-  // فقط روی http(s) — در حالت file:// سرویس‌کار کار نمی‌کند
   if (!("serviceWorker" in navigator) || !/^https?:$/.test(location.protocol)) return;
   navigator.serviceWorker.register("sw.js").then(
     (reg) => {
@@ -564,9 +774,7 @@ function registerServiceWorker() {
         });
       });
     },
-    () => {
-      // ثبت سرویس‌کار شکست خورد؛ برنامه بدون کار آفلاین ادامه می‌دهد
-    }
+    () => {}
   );
 }
 
@@ -583,3 +791,4 @@ function bindConnectionStatus() {
 
 registerServiceWorker();
 bindConnectionStatus();
+boot();
