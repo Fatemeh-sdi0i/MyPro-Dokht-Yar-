@@ -3,6 +3,7 @@ const { requireUser } = require('./auth');
 const { publicAuthRoutes, protectedAuthRoutes } = require('./routes/auth');
 const customersRoutes = require('./routes/customers');
 const ordersRoutes = require('./routes/orders');
+const businessRoutes = require('./routes/business');
 const { HttpError } = require('./util');
 
 function buildApp({ db, loginMax, trustProxy = process.env.TRUST_PROXY === '1', logger = false }) {
@@ -40,6 +41,7 @@ function buildApp({ db, loginMax, trustProxy = process.env.TRUST_PROXY === '1', 
     await protectedAuthRoutes(priv, { db });
     priv.register(customersRoutes, { db });
     priv.register(ordersRoutes, { db });
+    priv.register(businessRoutes, { db });
   }, { prefix: '/api/v1' });
 
   return app;
