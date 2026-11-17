@@ -11,6 +11,7 @@ const PASSWORD = process.env.E2E_PASSWORD;
 
 let browser;
 let page;
+let customerName = "";
 const pageErrors = [];
 
 before(async () => {
@@ -47,7 +48,7 @@ test("ورود درست، مشتری و سفارش ثبت می‌شود و وض�
   await page.click('#loginForm button[type="submit"]');
   await page.waitForSelector("#loginGate[hidden]", { state: "attached" });
 
-  const customerName = "مشتری تستی " + Date.now();
+  customerName = "مشتری تستی " + Date.now();
   await page.click('.nav-item[data-page="customers"]');
   await page.click("#addCustomerBtn");
   await page.fill('#customerForm input[name="name"]', customerName);
