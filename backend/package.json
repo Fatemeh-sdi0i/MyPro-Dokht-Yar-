@@ -1,0 +1,17 @@
+{
+  "name": "dokhtyar-backend",
+  "version": "0.4.0",
+  "private": true,
+  "description": "API دوخت‌یار (فاز ۴)",
+  "main": "src/server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "create-admin": "node scripts/create-admin.js"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "pg": "^8.13.0"
+  }
+}
