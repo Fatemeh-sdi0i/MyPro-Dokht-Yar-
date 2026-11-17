@@ -1,0 +1,11 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# build & deploy outputs (none in phase 1, reserved for later phases)
+_site/
+dist/
+node_modules/
+*.log
