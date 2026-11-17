@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#101a35"/>
+  <!-- safe zone ~80%: نماد کوچک‌تر برای ماسک‌های گرد/مربعی -->
+  <g transform="translate(256 256) scale(0.7) translate(-256 -256)">
+    <circle cx="256" cy="256" r="150" fill="none" stroke="#d6b48d" stroke-width="22"/>
+    <path d="M256 150 C 300 190, 212 230, 256 270 S 300 330, 256 362" fill="none" stroke="#f4dfcc" stroke-width="22" stroke-linecap="round"/>
+    <circle cx="256" cy="150" r="14" fill="#f4dfcc"/>
+  </g>
+</svg>
