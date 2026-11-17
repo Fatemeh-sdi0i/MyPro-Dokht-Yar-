@@ -107,5 +107,5 @@ test('export: admin gets a complete JSON backup without deleted rows', async () 
   assert.ok(Array.isArray(body.customers) && body.customers.length >= 1);
   assert.ok(Array.isArray(body.orders) && body.orders.length === 2);
   assert.ok(Array.isArray(body.transactions));
-  assert.ok(!('password_hash' in JSON.stringify(body)));
+  assert.ok(!JSON.stringify(body).includes('password_hash'));
 });
