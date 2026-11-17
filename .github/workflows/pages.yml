@@ -30,6 +30,8 @@ jobs:
             --exclude '.github' \
             --exclude '.gitignore' \
             --exclude '*.md' \
+            --exclude 'backend' \
+            --exclude 'tests' \
             ./ _site/
           touch _site/.nojekyll
 
