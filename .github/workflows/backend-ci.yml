@@ -76,3 +76,14 @@ jobs:
       - name: Run API tests
         working-directory: backend
         run: npm test
+
+  frontend-logic:
+    name: Frontend logic tests (no dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run tests
+        run: node --test tests/jalali.test.js
