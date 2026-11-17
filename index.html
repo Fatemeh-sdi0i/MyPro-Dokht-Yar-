@@ -12,7 +12,7 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand"><div class="brand-mark">♧</div><div><strong>دوخت‌یار</strong><small>مدیریت هوشمند مزون شما</small></div></div>
-    <div class="profile"><div class="avatar avatar-main">ف</div><div><b>فاطمه سعیدی</b><small>مدیر مزون</small></div><span>⌄</span></div>
+    <div class="profile"><div class="avatar avatar-main" data-bind="ownerInitial">ف</div><div><b data-bind="ownerName">فاطمه سعیدی</b><small>مدیر مزون</small></div><span>⌄</span></div>
     <nav class="nav">
       <button class="nav-item active" data-page="dashboard"><span>⌂</span>خانه</button>
       <button class="nav-item" data-page="orders"><span>▤</span>سفارش‌ها</button>
@@ -30,20 +30,20 @@
       <div class="mobile-brand">دوخت‌یار</div>
       <div class="top-actions"><button class="round-btn" title="اعلان‌ها">♧<i></i></button><button class="round-btn" title="تقویم">▦</button></div>
       <label class="global-search"><input id="globalSearch" placeholder="جستجو در سفارش‌ها، مشتریان و ..."><span>⌕</span></label>
-      <div class="top-user"><span class="avatar">ف</span><span>فاطمه سعیدی</span><span>⌄</span></div>
+      <div class="top-user"><span class="avatar" data-bind="ownerInitial">ف</span><span data-bind="ownerName">فاطمه سعیدی</span><span>⌄</span></div>
     </header>
 
     <section class="page active" id="dashboard">
       <div class="stats-grid">
-        <article class="stat-card navy"><span class="stat-icon">✓</span><label>تحویل داده شده</label><strong>۲۵</strong><small>↑ ۱۳٪ نسبت به ماه قبل</small></article>
-        <article class="stat-card cream"><span class="stat-icon">◇</span><label>آماده تحویل</label><strong>۸</strong><small>↑ ۸٪ نسبت به ماه قبل</small></article>
-        <article class="stat-card navy"><span class="stat-icon">✂</span><label>در حال دوخت</label><strong>۱۲</strong><small>↑ ۳٪ نسبت به ماه قبل</small></article>
-        <article class="stat-card cream"><span class="stat-icon">⌛</span><label>در انتظار شروع</label><strong>۷</strong><small>↑ ۶٪ نسبت به ماه قبل</small></article>
+        <article class="stat-card navy"><span class="stat-icon">✓</span><label>تحویل داده شده</label><strong id="statDelivered">۰</strong><small>↑ ۱۳٪ نسبت به ماه قبل</small></article>
+        <article class="stat-card cream"><span class="stat-icon">◇</span><label>آماده تحویل</label><strong id="statReady">۰</strong><small>↑ ۸٪ نسبت به ماه قبل</small></article>
+        <article class="stat-card navy"><span class="stat-icon">✂</span><label>در حال دوخت</label><strong id="statProgress">۰</strong><small>↑ ۳٪ نسبت به ماه قبل</small></article>
+        <article class="stat-card cream"><span class="stat-icon">⌛</span><label>در انتظار شروع</label><strong id="statWaiting">۰</strong><small>↑ ۶٪ نسبت به ماه قبل</small></article>
       </div>
       <div class="dashboard-grid">
         <section class="panel performance">
           <div class="panel-heading"><h2>↗ عملکرد ماهانه</h2><select><option>امسال</option><option>شش ماه اخیر</option></select></div>
-          <div class="revenue-pill"><b>▥ ۲۴,۸۸۵,۰۰۰</b><small>تومان</small></div>
+          <div class="revenue-pill"><b>▥ <span id="revenueTotal">۰</span></b><small>درآمد تحویل‌شده (تومان)</small></div>
           <div class="chart">
             <div class="chart-lines"><i></i><i></i><i></i><i></i></div>
             <svg viewBox="0 0 700 190" preserveAspectRatio="none" aria-label="نمودار عملکرد">
@@ -96,10 +96,60 @@
       </div>
     </section>
 
-    <section class="page placeholder-page" id="coworkers"><div class="page-heading"><div><p class="eyebrow">مدیریت تیم</p><h1>همکاران</h1></div></div><div class="panel empty-panel">بخش مدیریت همکاران در مرحله بعدی تکمیل می‌شود.</div></section>
-    <section class="page placeholder-page" id="finance"><div class="page-heading"><div><p class="eyebrow">درآمد و هزینه</p><h1>امور مالی</h1></div></div><div class="panel empty-panel">بخش امور مالی در مرحله بعدی تکمیل می‌شود.</div></section>
-    <section class="page placeholder-page" id="reports"><div class="page-heading"><div><p class="eyebrow">نمای کلی کسب‌وکار</p><h1>گزارش‌ها</h1></div></div><div class="panel empty-panel">گزارش‌های عملکرد در مرحله بعدی تکمیل می‌شوند.</div></section>
-    <section class="page placeholder-page" id="settings"><div class="page-heading"><div><p class="eyebrow">شخصی‌سازی</p><h1>تنظیمات</h1></div></div><div class="panel empty-panel">تنظیمات حساب و مزون در مرحله بعدی تکمیل می‌شود.</div></section>
+    <section class="page" id="coworkers">
+      <div class="page-heading"><div><p class="eyebrow">مدیریت تیم</p><h1>همکاران</h1></div><button class="primary-btn" id="addStaffBtn">＋ افزودن همکار</button></div>
+      <div class="customer-stats">
+        <article class="stat-card navy"><label>کل همکاران</label><strong id="staffCount">۰</strong></article>
+        <article class="stat-card cream"><label>فعال</label><strong id="staffActive">۰</strong></article>
+      </div>
+      <section class="panel table-panel">
+        <div class="table-wrap"><table><thead><tr><th>همکار</th><th>نام</th><th>نقش</th><th>شماره تماس</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody id="staffBody"></tbody></table></div>
+      </section>
+    </section>
+
+    <section class="page" id="finance">
+      <div class="page-heading"><div><p class="eyebrow">درآمد و هزینه</p><h1>امور مالی</h1></div><button class="primary-btn" id="addTxBtn">＋ ثبت تراکنش</button></div>
+      <div class="customer-stats">
+        <article class="stat-card cream"><label>درآمد سفارش‌ها</label><strong class="small-num" id="finOrderIncome">۰</strong><small>از سفارش‌های تحویل‌شده</small></article>
+        <article class="stat-card cream"><label>سایر درآمدها</label><strong class="small-num" id="finOtherIncome">۰</strong></article>
+        <article class="stat-card navy"><label>هزینه‌ها</label><strong class="small-num" id="finExpense">۰</strong></article>
+        <article class="stat-card navy"><label>مانده</label><strong class="small-num" id="finBalance">۰</strong></article>
+      </div>
+      <section class="panel table-panel">
+        <div class="toolbar"><div class="chips"><button class="chip selected" data-tx-filter="all">همه</button><button class="chip" data-tx-filter="income">درآمد</button><button class="chip" data-tx-filter="expense">هزینه</button></div></div>
+        <div class="table-wrap"><table><thead><tr><th>تاریخ</th><th>نوع</th><th>دسته</th><th>شرح</th><th>مبلغ (تومان)</th><th>عملیات</th></tr></thead><tbody id="txBody"></tbody></table></div>
+      </section>
+    </section>
+
+    <section class="page" id="reports">
+      <div class="page-heading"><div><p class="eyebrow">نمای کلی کسب‌وکار</p><h1>گزارش‌ها</h1></div></div>
+      <div id="reportsContent"></div>
+    </section>
+
+    <section class="page" id="settings">
+      <div class="page-heading"><div><p class="eyebrow">شخصی‌سازی</p><h1>تنظیمات</h1></div></div>
+      <div class="dashboard-grid">
+        <section class="panel">
+          <h2 class="panel-title">اطلاعات مزون</h2>
+          <form id="settingsForm" class="settings-form">
+            <label>نام مزون<input name="shopName" placeholder="مزون دوخت‌یار"></label>
+            <label>نام مدیر<input name="ownerName" placeholder="نام مدیر"></label>
+            <label>شماره تماس<input name="phone" inputmode="tel" placeholder="09xxxxxxxxx"></label>
+            <label>آدرس<input name="address" placeholder="آدرس مزون"></label>
+            <label>واحد پول<input name="currency" placeholder="تومان"></label>
+            <button class="primary-btn" type="submit">ذخیره تنظیمات</button>
+          </form>
+        </section>
+        <section class="panel">
+          <h2 class="panel-title">داده‌ها</h2>
+          <p class="muted">داده‌ها فقط در همین مرورگر ذخیره می‌شوند. برای پشتیبان‌گیری فایل JSON دانلود کنید.</p>
+          <div class="settings-actions">
+            <button class="secondary-btn" id="exportBtn" type="button">دانلود پشتیبان (JSON)</button>
+            <button class="secondary-btn danger" id="resetBtn" type="button">بازگردانی داده‌های نمونه</button>
+          </div>
+        </section>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -113,6 +163,16 @@
     <button type="button" class="modal-close" data-close>×</button><p class="eyebrow">دفتر مشتریان</p><h2>افزودن مشتری جدید</h2>
     <div class="form-grid single"><label>نام و نام خانوادگی<input name="name" required placeholder="نام مشتری"></label><label>شماره تماس<input name="phone" required inputmode="tel" pattern="[0-9۰-۹]{11}" title="شماره موبایل ۱۱ رقمی" placeholder="09xxxxxxxxx"></label><label>یادداشت<input name="note" placeholder="توضیحات دلخواه"></label></div>
     <button class="primary-btn full" type="submit">ذخیره مشتری</button>
+  </form>
+  <form class="modal" id="staffForm">
+    <button type="button" class="modal-close" data-close>×</button><p class="eyebrow">تیم مزون</p><h2>افزودن همکار</h2>
+    <div class="form-grid single"><label>نام و نام خانوادگی<input name="name" required placeholder="نام همکار"></label><label>نقش<input name="role" placeholder="مثلاً خیاط ارشد"></label><label>شماره تماس<input name="phone" inputmode="tel" placeholder="09xxxxxxxxx"></label></div>
+    <button class="primary-btn full" type="submit">ذخیره همکار</button>
+  </form>
+  <form class="modal" id="txForm">
+    <button type="button" class="modal-close" data-close>×</button><p class="eyebrow">امور مالی</p><h2>ثبت تراکنش</h2>
+    <div class="form-grid"><label>نوع<select name="kind"><option value="expense">هزینه</option><option value="income">درآمد</option></select></label><label>دسته<select name="category"><option>پارچه</option><option>اجاره</option><option>حقوق</option><option>ابزار</option><option>حمل‌ونقل</option><option>سایر</option></select></label><label>مبلغ (تومان)<input name="amount" type="number" min="1" required placeholder="۰"></label><label>تاریخ<input name="date" placeholder="۱۴۰۵/۰۸/۱۶"></label><label class="span-2">شرح<input name="note" placeholder="توضیح کوتاه"></label></div>
+    <button class="primary-btn full" type="submit">ثبت تراکنش</button>
   </form>
 </div>
 <div class="toast" id="toast"></div>
