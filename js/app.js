@@ -57,6 +57,7 @@ function renderAll() {
   applyOwnerBinding();
   $("#logoutBtn").hidden = !REMOTE;
   $("#resetBtn").hidden = REMOTE;
+  renderImport();
 }
 
 /* ---------- ورود و همگام‌سازی با سرور ---------- */
@@ -147,7 +148,8 @@ async function submitLogin(e) {
   const d = new FormData(e.target);
   $("#loginError").textContent = "";
   try {
-    await Api.login(String(d.get("email")).trim(), String(d.get("password")));
+    const session = await Api.login(String(d.get("email")).trim(), String(d.get("password")));
+    currentRole = session.user?.role || null;
     await loadRemote();
     hideGate();
     renderAll();
@@ -640,11 +642,155 @@ async function submitTransaction(e) {
   toast("تراکنش ثبت شد.");
 }
 
+/* ---------- انتقال داده‌های این مرورگر به سرور (یک‌باره) ---------- */
+
+// داده‌ی خام localStorage پیش از پاک شدن حالت سرور (فقط خواندنی)
+let legacyData = null;
+let currentRole = null;
+
+function readLegacy() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function legacyCounts() {
+  const d = legacyData || {};
+  const n = (k) => (Array.isArray(d[k]) ? d[k].length : 0);
+  return { customers: n("customers"), orders: n("orders"), staff: n("staff"), transactions: n("transactions") };
+}
+
+function serverIsEmpty() {
+  return !state.customers.length && !state.orders.length && !state.staff.length && !state.transactions.length;
+}
+
+function renderImport() {
+  const btn = $("#importBtn");
+  if (!btn) return;
+  const c = legacyCounts();
+  const total = c.customers + c.orders + c.staff + c.transactions;
+  const show = REMOTE && currentRole === "admin" && !!legacyData && total > 0 && serverIsEmpty();
+  btn.hidden = !show;
+  if (show) {
+    btn.textContent = `وارد کردن داده‌های این مرورگر (${toFaDigits(c.customers)} مشتری، ${toFaDigits(c.orders)} سفارش)`;
+  }
+}
+
+// تاریخ شمسی ذخیره‌شده → ISO؛ «تعیین نشده» یا نامعتبر = null
+function legacyDateToIso(text) {
+  const v = String(text || "").trim();
+  if (!v || v === "تعیین نشده") return null;
+  return Jalali.jalaliStringToISO(v) || null;
+}
+
+const LEGACY_TIER = { VIP: "vip", "فعال": "active", "معمولی": "regular" };
+
+async function importLegacy() {
+  const d = legacyData;
+  if (!d) return;
+  if (!serverIsEmpty()) {
+    toast("سرور قبلاً داده دارد؛ انتقال دوباره انجام نمی‌شود.");
+    return;
+  }
+  const c = legacyCounts();
+  const ok = confirm(
+    `این داده‌ها به سرور منتقل شوند؟\n` +
+    `${c.customers} مشتری، ${c.orders} سفارش، ${c.staff} همکار، ${c.transactions} تراکنش.\n\n` +
+    `شماره و تاریخ ایجاد سفارش‌ها حفظ می‌شوند.`
+  );
+  if (!ok) return;
+
+  const errors = [];
+  const attempt = async (label, fn) => {
+    try { return await fn(); } catch (err) { errors.push(`${label}: ${err.message || "خطا"}`); return null; }
+  };
+  const customerIdByName = {};
+
+  for (const cu of d.customers || []) {
+    const created = await attempt(`مشتری «${cu.name}»`, () => Api.createCustomer({
+      name: String(cu.name || "").trim(),
+      phone: toEnDigits(cu.phone || "").replace(/\s/g, "") || undefined,
+      note: cu.note || undefined,
+      tier: LEGACY_TIER[cu.state] || "regular",
+    }));
+    if (created) customerIdByName[created.name] = created.id;
+  }
+
+  for (const o of d.orders || []) {
+    let customerId = customerIdByName[o.customer];
+    if (!customerId) {
+      const created = await attempt(`مشتری «${o.customer}»`, () => Api.createCustomer({ name: String(o.customer || "").trim() }));
+      if (!created) continue;
+      customerId = customerIdByName[created.name] = created.id;
+    }
+    // شماره‌ی اصلی از شناسه‌ی نمایشی «۱۴۰۵-۰۱۷» خوانده می‌شود
+    const legacyNo = parseInt(toEnDigits(String(o.id || "")).split("-")[1], 10);
+    await attempt(`سفارش «${o.desc}»`, () => Api.createOrder({
+      customer_id: customerId,
+      type: o.type,
+      description: String(o.desc || "").trim() || "-",
+      price: Math.max(0, Math.round(Number(toEnDigits(String(o.price ?? 0))) || 0)),
+      due_on: legacyDateToIso(o.due),
+      status: o.status,
+      order_no: Number.isInteger(legacyNo) && legacyNo > 0 ? legacyNo : undefined,
+      created_on: legacyDateToIso(o.created) || undefined,
+    }));
+  }
+
+  for (const st of d.staff || []) {
+    const created = await attempt(`همکار «${st.name}»`, () => Api.createStaff({
+      name: String(st.name || "").trim(),
+      role_title: st.role || "",
+      phone: toEnDigits(st.phone || "") || undefined,
+    }));
+    if (created && st.active === false) {
+      await attempt(`غیرفعال‌سازی «${st.name}»`, () => Api.patchStaff(created.id, { active: false }));
+    }
+  }
+
+  for (const t of d.transactions || []) {
+    const amount = Math.round(Number(toEnDigits(String(t.amount ?? 0))));
+    if (!(amount > 0)) {
+      errors.push(`تراکنش ${t.date || ""}: مبلغ نامعتبر`);
+      continue;
+    }
+    await attempt(`تراکنش ${t.date || ""}`, () => Api.createTransaction({
+      kind: t.kind,
+      category: String(t.category || "سایر"),
+      amount,
+      occurred_on: legacyDateToIso(t.date),
+      note: String(t.note || ""),
+    }));
+  }
+
+  const s = d.settings || {};
+  await attempt("تنظیمات", () => Api.saveSettings({
+    shop_name: String(s.shopName || "").trim() || undefined,
+    owner_name: String(s.ownerName || "").trim(),
+    phone: toEnDigits(s.phone || ""),
+    address: String(s.address || "").trim(),
+    currency: String(s.currency || "").trim() || undefined,
+  }));
+
+  await loadRemote();
+  renderAll();
+  if (errors.length) {
+    alert("بعضی موارد منتقل نشدند:\n\n" + errors.slice(0, 10).join("\n") + (errors.length > 10 ? `\n… و ${errors.length - 10} مورد دیگر` : ""));
+    toast("انتقال با خطا کامل شد؛ موارد ناموفق در پیام نمایش داده شدند.");
+  } else {
+    toast("داده‌های این مرورگر با موفقیت به سرور منتقل شدند.");
+  }
+}
+
 /* ---------- اتصال رویدادها ---------- */
 
 function bindEvents() {
   $("#loginForm").addEventListener("submit", submitLogin);
   $("#logoutBtn").addEventListener("click", logout);
+  $("#importBtn").addEventListener("click", importLegacy);
 
   $$(".nav-item").forEach((b) => b.addEventListener("click", () => go(b.dataset.page)));
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => go(b.dataset.goto)));
@@ -744,14 +890,16 @@ async function boot() {
     renderAll();
     return;
   }
-  // حالت سرور: داده‌ی نمونه‌ی محلی نمایش داده نمی‌شود
+  // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود
+  legacyData = readLegacy();
   state.orders = [];
   state.customers = [];
   state.staff = [];
   state.transactions = [];
   renderAll();
   try {
-    await Api.me();
+    const me = await Api.me();
+    currentRole = me.user?.role || null;
     await loadRemote();
     hideGate();
   } catch (err) {
