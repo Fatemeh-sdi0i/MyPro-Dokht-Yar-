@@ -532,6 +532,7 @@ async function submitOrder(e) {
   const price = Number(toEnDigits(d.get("price") || "0")) || 0;
 
   if (REMOTE) {
+    if (!Number.isInteger(price) || price < 0) { toast("قیمت باید عدد صحیح و بدون اعشار باشد."); return; }
     const dueIso = formDateToIso(d.get("due"));
     if (dueIso === undefined) { toast("تاریخ تحویل باید به شکل ۱۴۰۵/۰۹/۲۰ باشد."); return; }
     const ok = await run(async () => {

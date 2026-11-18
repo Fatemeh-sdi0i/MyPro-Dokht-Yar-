@@ -1,0 +1,23 @@
+# واحد systemd برای اجرای API و رابط ایستا.
+# نصب: sudo cp dokhtyar.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now dokhtyar
+[Unit]
+Description=دوخت‌یار (API و رابط)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dokhtyar
+WorkingDirectory=/opt/dokhtyar/backend
+EnvironmentFile=/etc/dokhtyar/env
+Environment=STATIC_DIR=/opt/dokhtyar
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/dokhtyar/backend
+
+[Install]
+WantedBy=multi-user.target
