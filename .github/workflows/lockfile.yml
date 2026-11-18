@@ -1,0 +1,33 @@
+# ساخت package-lock.json برای بک‌اند روی GitHub Actions (که به رجیستری npm دسترسی دارد).
+# فقط اجرای دستی؛ package.json تغییر نمی‌کند و فایل قفل‌شده به‌صورت artifact دانلود می‌شود.
+name: Generate backend lockfile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve dependencies without changing package.json
+        working-directory: backend
+        run: npm install --package-lock-only --no-audit --no-fund
+
+      - name: Show resolved versions
+        working-directory: backend
+        run: npm ls --depth=0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-package-lock
+          path: backend/package-lock.json
+          if-no-files-found: error
