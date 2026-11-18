@@ -148,7 +148,8 @@ async function submitLogin(e) {
   const d = new FormData(e.target);
   $("#loginError").textContent = "";
   try {
-    await Api.login(String(d.get("email")).trim(), String(d.get("password")));
+    const session = await Api.login(String(d.get("email")).trim(), String(d.get("password")));
+    currentRole = session.user?.role || null;
     await loadRemote();
     hideGate();
     renderAll();
@@ -645,6 +646,7 @@ async function submitTransaction(e) {
 
 // داده‌ی خام localStorage پیش از پاک شدن حالت سرور (فقط خواندنی)
 let legacyData = null;
+let currentRole = null;
 
 function readLegacy() {
   try {
@@ -670,7 +672,7 @@ function renderImport() {
   if (!btn) return;
   const c = legacyCounts();
   const total = c.customers + c.orders + c.staff + c.transactions;
-  const show = REMOTE && !!legacyData && total > 0 && serverIsEmpty();
+  const show = REMOTE && currentRole === "admin" && !!legacyData && total > 0 && serverIsEmpty();
   btn.hidden = !show;
   if (show) {
     btn.textContent = `وارد کردن داده‌های این مرورگر (${toFaDigits(c.customers)} مشتری، ${toFaDigits(c.orders)} سفارش)`;
@@ -697,7 +699,7 @@ async function importLegacy() {
   const ok = confirm(
     `این داده‌ها به سرور منتقل شوند؟\n` +
     `${c.customers} مشتری، ${c.orders} سفارش، ${c.staff} همکار، ${c.transactions} تراکنش.\n\n` +
-    `تاریخ ایجاد سفارش‌ها در سرور امروز ثبت می‌شود و شماره‌ی سفارش‌ها دوباره از ۱ شروع می‌شود.`
+    `شماره و تاریخ ایجاد سفارش‌ها حفظ می‌شوند.`
   );
   if (!ok) return;
 
@@ -724,6 +726,8 @@ async function importLegacy() {
       if (!created) continue;
       customerId = customerIdByName[created.name] = created.id;
     }
+    // شماره‌ی اصلی از شناسه‌ی نمایشی «۱۴۰۵-۰۱۷» خوانده می‌شود
+    const legacyNo = parseInt(toEnDigits(String(o.id || "")).split("-")[1], 10);
     await attempt(`سفارش «${o.desc}»`, () => Api.createOrder({
       customer_id: customerId,
       type: o.type,
@@ -731,6 +735,8 @@ async function importLegacy() {
       price: Math.max(0, Math.round(Number(toEnDigits(String(o.price ?? 0))) || 0)),
       due_on: legacyDateToIso(o.due),
       status: o.status,
+      order_no: Number.isInteger(legacyNo) && legacyNo > 0 ? legacyNo : undefined,
+      created_on: legacyDateToIso(o.created) || undefined,
     }));
   }
 
@@ -892,7 +898,8 @@ async function boot() {
   state.transactions = [];
   renderAll();
   try {
-    await Api.me();
+    const me = await Api.me();
+    currentRole = me.user?.role || null;
     await loadRemote();
     hideGate();
   } catch (err) {

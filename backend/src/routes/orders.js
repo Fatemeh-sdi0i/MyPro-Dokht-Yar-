@@ -64,12 +64,24 @@ module.exports = async function ordersRoutes(app, { db }) {
           price: { type: 'integer', minimum: 0, maximum: 1000000000000 },
           due_on: { type: ['string', 'null'] },
           status: { type: 'string', enum: ORDER_STATUSES },
+          // فقط برای انتقال داده‌های قبلی (مدیر): شماره و تاریخ ایجاد اصلی
+          order_no: { type: 'integer', minimum: 1, maximum: 1000000000 },
+          created_on: { type: 'string' },
         },
       },
+      // اعتبارسنجی نقش در preHandler انجام می‌شود (پیام فارسی یکسان با بقیه‌ی مسیرها)
+    },
+    preHandler: async (req) => {
+      const importing = req.body && (req.body.order_no !== undefined || req.body.created_on !== undefined);
+      if (importing && req.user.role !== 'admin') {
+        throw new HttpError(403, 'forbidden', 'این کار فقط برای مدیر مجاز است');
+      }
     },
   }, async (req, reply) => {
     const due = isoDate(req.body.due_on);
     if (due === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ تحویل باید به شکل YYYY-MM-DD باشد');
+    const created = req.body.created_on === undefined ? null : isoDate(req.body.created_on);
+    if (created === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ ایجاد باید به شکل YYYY-MM-DD باشد');
     const shopId = req.user.shop_id;
 
     const id = await withTx(db, async (tx) => {
@@ -79,13 +91,18 @@ module.exports = async function ordersRoutes(app, { db }) {
         'SELECT id FROM customers WHERE id = $1 AND shop_id = $2 AND deleted_at IS NULL', [req.body.customer_id, shopId]
       );
       if (!cust.rows[0]) throw new HttpError(400, 'customer_not_found', 'مشتری پیدا نشد');
-      const next = await tx.query('SELECT COALESCE(MAX(order_no), 0) + 1 AS n FROM orders WHERE shop_id = $1', [shopId]);
+      // شماره‌ی صریح فقط در انتقال داده (مدیر) داده می‌شود؛ تکرار با قید یکتایی پایگاه داده رد می‌شود
+      let orderNo = req.body.order_no;
+      if (orderNo === undefined) {
+        const next = await tx.query('SELECT COALESCE(MAX(order_no), 0) + 1 AS n FROM orders WHERE shop_id = $1', [shopId]);
+        orderNo = next.rows[0].n;
+      }
       const status = req.body.status || 'waiting';
       const ins = await tx.query(
-        `INSERT INTO orders (shop_id, order_no, customer_id, type, description, status, price, due_on)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-        [shopId, next.rows[0].n, req.body.customer_id, req.body.type, req.body.description.trim(),
-          status, req.body.price || 0, due]
+        `INSERT INTO orders (shop_id, order_no, customer_id, type, description, status, price, due_on, created_on)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::date, current_date)) RETURNING id`,
+        [shopId, orderNo, req.body.customer_id, req.body.type, req.body.description.trim(),
+          status, req.body.price || 0, due, created]
       );
       await tx.query(
         'INSERT INTO order_status_log (order_id, from_status, to_status, changed_by) VALUES ($1, NULL, $2, $3)',
