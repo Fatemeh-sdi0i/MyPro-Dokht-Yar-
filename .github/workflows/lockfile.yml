@@ -4,6 +4,8 @@ name: Generate backend lockfile
 
 on:
   workflow_dispatch:
+  push:
+    branches: [phase-4-lockfile]
 
 permissions:
   contents: read
