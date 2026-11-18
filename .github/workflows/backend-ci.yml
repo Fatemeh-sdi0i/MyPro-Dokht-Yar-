@@ -69,9 +69,9 @@ jobs:
           psql postgres://postgres:postgres@localhost:5432/postgres -qc "CREATE DATABASE dokhtyar_test"
           ./backend/db/migrate.sh
 
-      - name: Install backend dependencies
+      - name: Install backend dependencies (from package-lock.json)
         working-directory: backend
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Run API tests
         working-directory: backend
@@ -114,7 +114,7 @@ jobs:
           psql postgres://postgres:postgres@localhost:5432/postgres -qc "CREATE DATABASE dokhtyar_e2e"
           ./backend/db/migrate.sh
           cd backend
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           node scripts/create-admin.js --email admin@e2e.test --name "مدیر تستی" --shop "مزون تستی"
 
       - name: Start server with static frontend
