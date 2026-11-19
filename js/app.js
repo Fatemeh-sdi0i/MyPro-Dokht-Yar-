@@ -7,7 +7,7 @@
 
 let activeOrderFilter = "all";
 let activeTxFilter = "all";
-const REMOTE = !!window.DOKHTYAR_CONFIG.remote;
+const REMOTE = !!(window.DOKHTYAR_CONFIG && window.DOKHTYAR_CONFIG.remote);
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
