@@ -139,6 +139,10 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
+      - name: Run import browser test (on an empty server, before other browser tests)
+        working-directory: tests/e2e
+        run: npm run test:import
+
       - name: Run browser tests
         working-directory: tests/e2e
         run: npm test
