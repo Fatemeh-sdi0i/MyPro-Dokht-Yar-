@@ -43,6 +43,7 @@
 
   root.ApiError = ApiError;
   root.Api = {
+    call: request,
     me: () => request("GET", "/auth/me"),
     login: (email, password) => request("POST", "/auth/login", { email, password }),
     logout: () => request("POST", "/auth/logout"),
