@@ -22,7 +22,7 @@ const user = () => `user-${++uid}`; // هر تست کاربر جدا دارد، 
 test('تغییر بدون اتصال در صف همان کاربر می‌ماند و با اتصال ارسال می‌شود', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   const r = await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'الف' });
   assert.equal(r.queued, true);
@@ -37,11 +37,11 @@ test('تغییر بدون اتصال در صف همان کاربر می‌مان
 test('جداسازی شاپ‌ها: کاربر دیگر صف را نمی‌بیند و ارسال نمی‌کند', async () => {
   reset();
   const a = user(), b = user();
-  await Sync.setScope(a);
+  await Sync.beginSession(a);
   responder = () => { throw netErr(); };
   await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'فقط برای الف' });
 
-  await Sync.setScope(b);
+  await Sync.beginSession(b);
   assert.equal(await Sync.pendingCount(), 0);
   calls.length = 0; // فراخوانی ارسال اولیه‌ی کاربر الف را کنار می‌گذاریم
   responder = null;
@@ -49,17 +49,17 @@ test('جداسازی شاپ‌ها: کاربر دیگر صف را نمی‌بی�
   assert.equal(res.sent, 0);
   assert.equal(calls.length, 0, 'کاربر ب هیچ درخواستی نباید بفرستد');
 
-  await Sync.setScope(a);
+  await Sync.beginSession(a);
   assert.equal(await Sync.pendingCount(), 1, 'صف کاربر الف دست‌نخورده است');
 });
 
 test('کش هر کاربر جداست', async () => {
   const a = user(), b = user();
-  await Sync.setScope(a);
+  await Sync.beginSession(a);
   await Sync.saveCache({ customers: [{ name: 'محرمانه‌ی الف' }] });
-  await Sync.setScope(b);
+  await Sync.beginSession(b);
   assert.equal(await Sync.loadCache(), null);
-  await Sync.setScope(a);
+  await Sync.beginSession(a);
   assert.deepEqual((await Sync.loadCache()).customers[0].name, 'محرمانه‌ی الف');
 });
 
@@ -67,7 +67,7 @@ test('خطای موقت سرور (۵۰۰، ۵۰۳، ۴۲۹، ۴۰۸) هیچ عم
   for (const status of [500, 503, 429, 408]) {
     reset();
     const u = user();
-    await Sync.setScope(u);
+    await Sync.beginSession(u);
     responder = () => { throw netErr(); };
     await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'اول' });
     await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'دوم' });
@@ -87,7 +87,7 @@ test('خطای موقت سرور (۵۰۰، ۵۰۳، ۴۲۹، ۴۰۸) هیچ عم
 test('نبود اتصال و ۴۰۱: صف دست‌نخورده، ۴۰۱ نشست را متوقف می‌کند', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   await Sync.send('POST', '/staff', { id: Sync.uuid(), name: 'ک' });
   responder = () => { throw netErr(); };
@@ -103,7 +103,7 @@ test('نبود اتصال و ۴۰۱: صف دست‌نخورده، ۴۰۱ نشس�
 test('خطای دائمی (۴۰۰) عملیات را به فهرست ردشده می‌برد و بقیه ادامه می‌یابند', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'نامعتبر' });
   await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'درست' });
@@ -121,7 +121,7 @@ test('خطای دائمی (۴۰۰) عملیات را به فهرست ردشده 
 test('تلاش مجدد عملیات ردشده با همان شناسه؛ حذف دائمی فقط با درخواست صریح', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   await Sync.send('POST', '/customers', { id: 'id-ثابت', name: 'دوباره' });
   responder = () => { throw err(400, 'موقتاً نامعتبر'); };
@@ -143,7 +143,7 @@ test('تلاش مجدد عملیات ردشده با همان شناسه؛ حذ�
 test('۴۰۴ برای حذف یا تغییر وضعیت یعنی انجام‌شده؛ ۴۰۴ برای ساخت، رد می‌شود', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   await Sync.send('DELETE', '/transactions/t1');
   await Sync.send('POST', '/orders/o1/status', { to: 'ready' });
@@ -154,26 +154,129 @@ test('۴۰۴ برای حذف یا تغییر وضعیت یعنی انجام‌ش
   assert.equal(await Sync.pendingCount(), 0);
 });
 
-test('خروج صف را پاک نمی‌کند؛ نشانه‌ی کاربر پاک می‌شود و ورود دوباره‌ی همان کاربر ارسال می‌کند', async () => {
+test('پایان نشست بدون خروج، صف را نگه می‌دارد و نشانه‌ی کاربر را پاک می‌کند', async () => {
   reset();
   const u = user();
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   responder = () => { throw netErr(); };
   await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'ماند' });
-  await Sync.clearScope();
+  await Sync.endSession();
   assert.equal(await Sync.lastScope(), null);
   assert.equal(await Sync.pendingCount(), 0, 'بدون نشست، صف دیده نمی‌شود');
 
-  await Sync.setScope(u);
+  await Sync.beginSession(u);
   assert.equal(await Sync.pendingCount(), 1, 'صف کاربر پس از ورود مجدد باقی است');
   assert.equal(await Sync.lastScope(), u);
 });
 
 test('بدون نشست هیچ درخواستی ارسال نمی‌شود و نوشتن آفلاین خطا می‌دهد', async () => {
   reset();
-  await Sync.clearScope();
+  await Sync.endSession();
   assert.equal((await Sync.flush()).sent, 0);
   assert.equal(calls.length, 0);
   responder = () => { throw netErr(); };
   await assert.rejects(Sync.send('POST', '/customers', { name: 'x' }));
+});
+
+/* ---------- خروج: آفلاین، ترتیب، جداسازی ---------- */
+
+test('خروج بعد از همه‌ی تغییرات کاربر ارسال می‌شود و ثبت خروج پاک می‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'قبل از خروج' });
+  await Sync.requestLogout();
+  assert.equal(await Sync.pendingCount(), 1, 'خروج در شمارش تغییرات نیست');
+  calls.length = 0;
+  responder = null;
+  const r = await Sync.flush();
+  assert.equal(r.loggedOut, true);
+  assert.deepEqual(calls.map((c) => c.path), ['/customers', '/auth/logout'], 'خروج باید آخر باشد');
+  const s = await Sync.settleLogout(u, r);
+  assert.equal(s.finished, true);
+  assert.equal(await Sync.hasPendingLogout(u), false);
+  assert.equal(await Sync.pendingCount(), 0);
+});
+
+test('خروج آفلاین: ثبت خروج و صف می‌مانند، کش نمایشی پاک می‌شود، و با اتصال تمام می‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  await Sync.saveCache({ customers: [{ name: 'محرمانه' }] });
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'هنوز نرفته' });
+  await Sync.requestLogout();
+  const r = await Sync.flush();
+  assert.equal(r.offline, true);
+  const s = await Sync.settleLogout(u, r);
+  assert.equal(s.finished, false);
+  assert.equal(await Sync.hasPendingLogout(u), true);
+  assert.equal(await Sync.loadCache(), null, 'کش نمایشی باید پاک شود');
+  assert.equal(await Sync.lastScope(), null, 'بوت آفلاین نباید این کاربر را نشان دهد');
+
+  responder = null;
+  const done = await Sync.finishPendingLogouts();
+  const mine = done.find((d) => d.userId === u);
+  assert.equal(mine.finished, true);
+  assert.equal(await Sync.hasPendingLogout(u), false);
+  assert.equal(Sync.currentUser(), u, 'finishPendingLogouts scope قبلی را برمی‌گرداند');
+});
+
+test('خروج با نشست نامعتبر (۴۰۱) تمام شده در نظر گرفته می‌شود و داده‌ی صف حفظ می‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'حفظ' });
+  await Sync.requestLogout();
+  responder = () => { throw err(401, 'ورود لازم است'); };
+  const r = await Sync.flush();
+  assert.equal(r.auth, true);
+  const s = await Sync.settleLogout(u, r);
+  assert.equal(s.finished, true);
+  assert.equal(await Sync.pendingCount(), 1, 'داده‌ی ارسال‌نشده نباید حذف شود');
+});
+
+test('خطای موقت هنگام خروج: ثبت خروج می‌ماند و تمام نمی‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  await Sync.requestLogout();
+  responder = () => { throw err(503, 'موقت'); };
+  const r = await Sync.flush();
+  assert.equal(r.retry, true);
+  assert.equal((await Sync.settleLogout(u, r)).finished, false);
+  assert.equal(await Sync.hasPendingLogout(u), true);
+});
+
+test('ورود جدید خروج قدیمی همان کاربر را حذف می‌کند تا نشست تازه باطل نشود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  await Sync.requestLogout();
+  await Sync.beginSession(u);
+  assert.equal(await Sync.hasPendingLogout(u), false);
+  responder = () => { throw netErr(); };
+  calls.length = 0;
+  const r = await Sync.flush();
+  assert.equal(r.loggedOut, false);
+  assert.equal(calls.some((c) => c.path === '/auth/logout'), false);
+});
+
+test('تسویه‌ی خروج یک کاربر، صف و کش کاربر دیگر را دست نمی‌زند', async () => {
+  reset();
+  const a = user(), b = user();
+  await Sync.beginSession(b);
+  await Sync.saveCache({ customers: [{ name: 'ب' }] });
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'برای ب' });
+  await Sync.beginSession(a);
+  await Sync.requestLogout();
+  responder = () => { throw netErr(); };
+  const r = await Sync.flush();
+  await Sync.settleLogout(a, { ...r, loggedOut: true });
+  await Sync.beginSession(b);
+  assert.equal(await Sync.pendingCount(), 1);
+  assert.deepEqual((await Sync.loadCache()).customers[0].name, 'ب');
 });
