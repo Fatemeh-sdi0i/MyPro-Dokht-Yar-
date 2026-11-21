@@ -1,4 +1,4 @@
-const { normalizePhone, isoDate, HttpError } = require('../util');
+const { normalizePhone, isoDate, HttpError, existingOwned, isIdRace } = require('../util');
 
 const requireAdmin = async (req) => {
   if (req.user.role !== 'admin') throw new HttpError(403, 'forbidden', 'این کار فقط برای مدیر مجاز است');
@@ -30,16 +30,30 @@ module.exports = async function businessRoutes(app, { db }) {
           name: { type: 'string', minLength: 1, maxLength: 120 },
           role_title: { type: 'string', maxLength: 120 },
           phone: { type: ['string', 'null'], maxLength: 30 },
+          id: { type: 'string', format: 'uuid' },
         },
       },
     },
   }, async (req, reply) => {
+    if (req.body.id && await existingOwned(db, 'staff', req.body.id, req.user.shop_id)) {
+      reply.code(200);
+      const { rows } = await db.query('SELECT * FROM staff WHERE id = $1 AND shop_id = $2', [req.body.id, req.user.shop_id]);
+      return staffOut(rows[0]);
+    }
     const phone = normalizePhone(req.body.phone);
     if (phone === undefined) throw new HttpError(400, 'invalid_phone', 'شماره‌ی موبایل معتبر نیست');
-    const { rows } = await db.query(
-      'INSERT INTO staff (shop_id, name, role_title, phone) VALUES ($1, $2, $3, $4) RETURNING *',
-      [req.user.shop_id, req.body.name.trim(), req.body.role_title || '', phone]
-    );
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        'INSERT INTO staff (id, shop_id, name, role_title, phone) VALUES (COALESCE($5::uuid, gen_random_uuid()), $1, $2, $3, $4) RETURNING *',
+        [req.user.shop_id, req.body.name.trim(), req.body.role_title || '', phone, req.body.id || null]
+      ));
+    } catch (err) {
+      if (!isIdRace(err, 'staff', req.body.id) || !(await existingOwned(db, 'staff', req.body.id, req.user.shop_id))) throw err;
+      reply.code(200);
+      const replay = await db.query('SELECT * FROM staff WHERE id = $1 AND shop_id = $2', [req.body.id, req.user.shop_id]);
+      return staffOut(replay.rows[0]);
+    }
     reply.code(201);
     return staffOut(rows[0]);
   });
@@ -127,17 +141,31 @@ module.exports = async function businessRoutes(app, { db }) {
           amount: { type: 'integer', minimum: 1, maximum: 1000000000000 },
           occurred_on: { type: ['string', 'null'] },
           note: { type: 'string', maxLength: 500 },
+          id: { type: 'string', format: 'uuid' },
         },
       },
     },
   }, async (req, reply) => {
+    if (req.body.id && await existingOwned(db, 'transactions', req.body.id, req.user.shop_id)) {
+      reply.code(200);
+      const { rows } = await db.query('SELECT * FROM transactions WHERE id = $1 AND shop_id = $2', [req.body.id, req.user.shop_id]);
+      return txOut(rows[0]);
+    }
     const day = isoDate(req.body.occurred_on);
     if (day === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ معتبر نیست');
-    const { rows } = await db.query(
-      `INSERT INTO transactions (shop_id, kind, category, amount, occurred_on, note, created_by)
-       VALUES ($1, $2, $3, $4, COALESCE($5::date, current_date), $6, $7) RETURNING *`,
-      [req.user.shop_id, req.body.kind, req.body.category.trim(), req.body.amount, day, req.body.note || '', req.user.id]
-    );
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `INSERT INTO transactions (id, shop_id, kind, category, amount, occurred_on, note, created_by)
+         VALUES (COALESCE($8::uuid, gen_random_uuid()), $1, $2, $3, $4, COALESCE($5::date, current_date), $6, $7) RETURNING *`,
+        [req.user.shop_id, req.body.kind, req.body.category.trim(), req.body.amount, day, req.body.note || '', req.user.id, req.body.id || null]
+      ));
+    } catch (err) {
+      if (!isIdRace(err, 'transactions', req.body.id) || !(await existingOwned(db, 'transactions', req.body.id, req.user.shop_id))) throw err;
+      reply.code(200);
+      const replay = await db.query('SELECT * FROM transactions WHERE id = $1 AND shop_id = $2', [req.body.id, req.user.shop_id]);
+      return txOut(replay.rows[0]);
+    }
     reply.code(201);
     return txOut(rows[0]);
   });
