@@ -43,4 +43,9 @@ async function existingOwned(db, table, id, shopId) {
   return true;
 }
 
-module.exports = { toEnDigits, normalizePhone, isoDate, HttpError, existingOwned };
+// خطای کلید اصلی روی همان شناسه‌ی کلاینت: درخواست هم‌زمان دیگری همان ردیف را ساخته است.
+function isIdRace(err, table, id) {
+  return Boolean(id) && Boolean(err) && err.code === '23505' && err.constraint === `${table}_pkey`;
+}
+
+module.exports = { toEnDigits, normalizePhone, isoDate, HttpError, existingOwned, isIdRace };

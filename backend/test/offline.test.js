@@ -107,3 +107,43 @@ test('invalid client id format is rejected (400)', async () => {
   const res = await call('POST', '/customers', { id: 'not-a-uuid', name: 'x' }, cookieA);
   assert.equal(res.statusCode, 400, res.body);
 });
+
+// دو درخواست هم‌زمان با یک شناسه: نتیجه همیشه یک ردیف و هر دو پاسخ موفق (۲۰۱ و ۲۰۰)
+test('هم‌زمانی روی یک شناسه‌ی مشتری: یک ردیف و بدون خطای ۵۰۰', async () => {
+  const id = randomUUID();
+  const payload = { id, name: 'مشتری هم‌زمان' };
+  const [r1, r2] = await Promise.all([
+    call('POST', '/customers', payload, cookieA),
+    call('POST', '/customers', payload, cookieA),
+  ]);
+  assert.deepEqual([r1.statusCode, r2.statusCode].sort(), [200, 201]);
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM customers WHERE id = $1', [id]);
+  assert.equal(rows[0].n, 1);
+});
+
+test('هم‌زمانی روی یک شناسه‌ی سفارش: یک ردیف و یک شماره‌ی سفارش', async () => {
+  const id = randomUUID();
+  const payload = { id, customer_id: customerId, type: 'sewing', description: 'هم‌زمان', price: 1000 };
+  const [r1, r2] = await Promise.all([
+    call('POST', '/orders', payload, cookieA),
+    call('POST', '/orders', payload, cookieA),
+  ]);
+  assert.deepEqual([r1.statusCode, r2.statusCode].sort(), [200, 201]);
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM orders WHERE id = $1', [id]);
+  assert.equal(rows[0].n, 1);
+  // شماره‌ی سفارش بعدی باید دقیقاً یکی بیشتر از بزرگ‌ترین شماره‌ی همین مزون باشد (هیچ شماره‌ای هدر نرفته)
+  const maxBefore = (await db.query(
+    `SELECT max(o.order_no)::int AS no FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE c.id = $1 OR o.shop_id = (SELECT shop_id FROM customers WHERE id = $1)`, [customerId])).rows[0].no;
+  const again = await call('POST', '/orders', { customer_id: customerId, type: 'repair', description: 'بعدی', price: 1 }, cookieA);
+  assert.equal(again.statusCode, 201);
+  assert.equal(again.json().order_no, maxBefore + 1);
+});
+
+test('هم‌زمانی روی شناسه‌ی مزون دیگر: ۴۰۹ و ردیفی از مزون دیگر دیده نمی‌شود', async () => {
+  const id = randomUUID();
+  const created = await call('POST', '/transactions', { id, kind: 'income', category: 'الف', amount: 5 }, cookieA);
+  assert.equal(created.statusCode, 201);
+  const other = await call('POST', '/transactions', { id, kind: 'income', category: 'ب', amount: 5 }, cookieB);
+  assert.equal(other.statusCode, 409);
+});

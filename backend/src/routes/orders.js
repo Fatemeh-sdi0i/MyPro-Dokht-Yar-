@@ -1,5 +1,5 @@
 const { withTx } = require('../db');
-const { isoDate, HttpError, existingOwned } = require('../util');
+const { isoDate, HttpError, existingOwned, isIdRace } = require('../util');
 
 const ORDER_TYPES = ['sewing', 'repair'];
 const ORDER_STATUSES = ['waiting', 'progress', 'ready', 'delivered'];
@@ -116,7 +116,16 @@ module.exports = async function ordersRoutes(app, { db }) {
         [ins.rows[0].id, status, req.user.id]
       );
       return ins.rows[0].id;
+    }).catch(async (err) => {
+      // هم‌زمانی روی همان شناسه: ردیف توسط درخواست دیگری ساخته شده؛ همان را برمی‌گردانیم
+      if (!isIdRace(err, 'orders', req.body.id) || !(await existingOwned(db, 'orders', req.body.id, shopId))) throw err;
+      return null;
     });
+    if (id === null) {
+      reply.code(200);
+      const { rows } = await db.query(`${baseSelect} WHERE o.id = $1 AND o.shop_id = $2`, [req.body.id, shopId]);
+      return orderOut(rows[0]);
+    }
     reply.code(201);
     return orderOut(await loadOrder(db, shopId, id));
   });

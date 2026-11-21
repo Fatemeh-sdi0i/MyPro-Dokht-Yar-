@@ -1,4 +1,4 @@
-const { normalizePhone, HttpError, existingOwned } = require('../util');
+const { normalizePhone, HttpError, existingOwned, isIdRace } = require('../util');
 
 const CUSTOMER_TIERS = ['regular', 'active', 'vip'];
 
@@ -55,11 +55,19 @@ module.exports = async function customersRoutes(app, { db }) {
     }
     const phone = normalizePhone(req.body.phone);
     if (phone === undefined) throw new HttpError(400, 'invalid_phone', 'شماره‌ی موبایل معتبر نیست (مثال: ۰۹۱۲۳۴۵۶۷۸۹)');
-    const { rows } = await db.query(
-      `INSERT INTO customers (id, shop_id, name, phone, note, tier)
-       VALUES (COALESCE($6::uuid, gen_random_uuid()), $1, $2, $3, $4, $5) RETURNING id`,
-      [req.user.shop_id, req.body.name.trim(), phone, req.body.note || '', req.body.tier || 'regular', req.body.id || null]
-    );
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        `INSERT INTO customers (id, shop_id, name, phone, note, tier)
+         VALUES (COALESCE($6::uuid, gen_random_uuid()), $1, $2, $3, $4, $5) RETURNING id`,
+        [req.user.shop_id, req.body.name.trim(), phone, req.body.note || '', req.body.tier || 'regular', req.body.id || null]
+      ));
+    } catch (err) {
+      if (!isIdRace(err, 'customers', req.body.id) || !(await existingOwned(db, 'customers', req.body.id, req.user.shop_id))) throw err;
+      reply.code(200);
+      const replay = await db.query(`${baseSelect} WHERE c.id = $1 AND c.shop_id = $2`, [req.body.id, req.user.shop_id]);
+      return customerOut(replay.rows[0]);
+    }
     reply.code(201);
     return customerOut(await loadCustomer(db, req.user.shop_id, rows[0].id));
   });
