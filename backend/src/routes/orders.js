@@ -1,5 +1,5 @@
 const { withTx } = require('../db');
-const { isoDate, HttpError } = require('../util');
+const { isoDate, HttpError, existingOwned } = require('../util');
 
 const ORDER_TYPES = ['sewing', 'repair'];
 const ORDER_STATUSES = ['waiting', 'progress', 'ready', 'delivered'];
@@ -67,6 +67,7 @@ module.exports = async function ordersRoutes(app, { db }) {
           // فقط برای انتقال داده‌های قبلی (مدیر): شماره و تاریخ ایجاد اصلی
           order_no: { type: 'integer', minimum: 1, maximum: 1000000000 },
           created_on: { type: 'string' },
+          id: { type: 'string', format: 'uuid' },
         },
       },
       // اعتبارسنجی نقش در preHandler انجام می‌شود (پیام فارسی یکسان با بقیه‌ی مسیرها)
@@ -83,6 +84,12 @@ module.exports = async function ordersRoutes(app, { db }) {
     const created = req.body.created_on === undefined ? null : isoDate(req.body.created_on);
     if (created === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ ایجاد باید به شکل YYYY-MM-DD باشد');
     const shopId = req.user.shop_id;
+    if (req.body.id && await existingOwned(db, 'orders', req.body.id, shopId)) {
+      // تکرار ارسال همان عملیات آفلاین: همان سفارش برمی‌گردد و شماره‌ی تازه مصرف نمی‌شود
+      reply.code(200);
+      const { rows } = await db.query(`${baseSelect} WHERE o.id = $1 AND o.shop_id = $2`, [req.body.id, shopId]);
+      return orderOut(rows[0]);
+    }
 
     const id = await withTx(db, async (tx) => {
       // قفل روی مزون: شماره‌ی سفارش بدون تکرار و بدون رقابت بین درخواست‌های هم‌زمان
@@ -99,10 +106,10 @@ module.exports = async function ordersRoutes(app, { db }) {
       }
       const status = req.body.status || 'waiting';
       const ins = await tx.query(
-        `INSERT INTO orders (shop_id, order_no, customer_id, type, description, status, price, due_on, created_on)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::date, current_date)) RETURNING id`,
+        `INSERT INTO orders (id, shop_id, order_no, customer_id, type, description, status, price, due_on, created_on)
+         VALUES (COALESCE($10::uuid, gen_random_uuid()), $1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::date, current_date)) RETURNING id`,
         [shopId, orderNo, req.body.customer_id, req.body.type, req.body.description.trim(),
-          status, req.body.price || 0, due, created]
+          status, req.body.price || 0, due, created, req.body.id || null]
       );
       await tx.query(
         'INSERT INTO order_status_log (order_id, from_status, to_status, changed_by) VALUES ($1, NULL, $2, $3)',

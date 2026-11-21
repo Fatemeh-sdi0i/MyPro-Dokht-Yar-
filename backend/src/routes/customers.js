@@ -1,4 +1,4 @@
-const { normalizePhone, HttpError } = require('../util');
+const { normalizePhone, HttpError, existingOwned } = require('../util');
 
 const CUSTOMER_TIERS = ['regular', 'active', 'vip'];
 
@@ -43,16 +43,22 @@ module.exports = async function customersRoutes(app, { db }) {
           phone: { type: ['string', 'null'], maxLength: 30 },
           note: { type: 'string', maxLength: 2000 },
           tier: { type: 'string', enum: CUSTOMER_TIERS },
+          id: { type: 'string', format: 'uuid' },
         },
       },
     },
   }, async (req, reply) => {
+    if (req.body.id && await existingOwned(db, 'customers', req.body.id, req.user.shop_id)) {
+      reply.code(200);
+      const { rows } = await db.query(`${baseSelect} WHERE c.id = $1 AND c.shop_id = $2`, [req.body.id, req.user.shop_id]);
+      return customerOut(rows[0]);
+    }
     const phone = normalizePhone(req.body.phone);
     if (phone === undefined) throw new HttpError(400, 'invalid_phone', 'شماره‌ی موبایل معتبر نیست (مثال: ۰۹۱۲۳۴۵۶۷۸۹)');
     const { rows } = await db.query(
-      `INSERT INTO customers (shop_id, name, phone, note, tier)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [req.user.shop_id, req.body.name.trim(), phone, req.body.note || '', req.body.tier || 'regular']
+      `INSERT INTO customers (id, shop_id, name, phone, note, tier)
+       VALUES (COALESCE($6::uuid, gen_random_uuid()), $1, $2, $3, $4, $5) RETURNING id`,
+      [req.user.shop_id, req.body.name.trim(), phone, req.body.note || '', req.body.tier || 'regular', req.body.id || null]
     );
     reply.code(201);
     return customerOut(await loadCustomer(db, req.user.shop_id, rows[0].id));
