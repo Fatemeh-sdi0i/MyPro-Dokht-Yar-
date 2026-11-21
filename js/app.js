@@ -77,7 +77,7 @@ function mapOrder(o) {
   return {
     uuid: o.id,
     customer_id: o.customer_id,
-    id: "۱۴۰۵-" + toFaDigits(pad2(o.order_no).padStart(3, "0")),
+    id: o._pending ? "در صف همگام‌سازی" : "۱۴۰۵-" + toFaDigits(pad2(o.order_no).padStart(3, "0")),
     customer: o.customer_name,
     type: o.type,
     desc: o.description,
@@ -88,19 +88,42 @@ function mapOrder(o) {
   };
 }
 
-// فقط برای نمایش؛ منبع حقیقت سرور است
-async function loadRemote() {
+// داده‌ی خام سرور (شکل پاسخ API)
+async function fetchRaw() {
   const [cust, ords, staff, txs, settings] = await Promise.all([
     Api.customers(), Api.orders(), Api.staff(), Api.transactions(), Api.settings(),
   ]);
-  const orders = ords.items.map(mapOrder);
+  return { customers: cust.items, orders: ords.items, staff: staff.items, transactions: txs.items, settings };
+}
+
+let offlineMode = false;
+
+// فقط برای نمایش؛ منبع حقیقت سرور است. در نبود اتصال از کش آخرین پاسخ موفق استفاده می‌شود.
+async function loadRemote() {
+  let raw;
+  try {
+    raw = await fetchRaw();
+    offlineMode = false;
+    await Sync.saveCache(raw);
+  } catch (err) {
+    if (!Sync.isNetworkError(err)) throw err;
+    const cached = await Sync.loadCache();
+    if (!cached) throw err;
+    raw = cached;
+    offlineMode = true;
+  }
+  applyRaw(Sync.applyPending(raw, await Sync.pendingOps()));
+}
+
+function applyRaw(d) {
+  const orders = d.orders.map(mapOrder);
   const lastByCustomer = {};
   orders.forEach((o) => {
     const prev = lastByCustomer[o.customer_id];
     if (!prev || o.created > prev) lastByCustomer[o.customer_id] = o.created;
   });
   state.orders = orders;
-  state.customers = cust.items.map((c) => ({
+  state.customers = d.customers.map((c) => ({
     uuid: c.id,
     name: c.name,
     phone: toFaDigits(c.phone || ""),
@@ -109,28 +132,119 @@ async function loadRemote() {
     state: TIER_LABEL[c.tier] || "معمولی",
     note: c.note || "",
   }));
-  state.staff = staff.items.map((s) => ({
+  state.staff = d.staff.map((s) => ({
     id: s.id, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), active: s.active,
   }));
-  state.transactions = txs.items.map((t) => ({
+  state.transactions = d.transactions.map((t) => ({
     id: t.id, date: faDate(t.occurred_on), kind: t.kind, category: t.category, amount: t.amount, note: t.note,
   }));
   state.settings = {
-    shopName: settings.shop_name,
-    ownerName: settings.owner_name,
-    phone: toFaDigits(settings.phone || ""),
-    address: settings.address || "",
-    currency: settings.currency || "تومان",
+    shopName: d.settings.shop_name,
+    ownerName: d.settings.owner_name,
+    phone: toFaDigits(d.settings.phone || ""),
+    address: d.settings.address || "",
+    currency: d.settings.currency || "تومان",
   };
 }
 
-// اجرای یک عملیات سرور، سپس خواندن دوباره‌ی داده‌ها و رندر
-async function run(action, okMsg) {
+// ارسال یک تغییر؛ اگر اتصال نباشد در صف می‌ماند. نتیجه: true یعنی در صف است.
+const w = (method, path, body) => Sync.send(method, path, body).then((r) => r.queued);
+
+// ارسال صف آفلاین به سرور. خطای موقت سرور یا نبود اتصال: ۳۰ ثانیه بعد دوباره تلاش می‌شود.
+let retryTimer = null;
+const RETRY_MS = 30000;
+async function syncNow() {
+  if (!REMOTE) return;
+  clearTimeout(retryTimer);
+  const r = await Sync.flush();
+  if (r.auth) {
+    showGate();
+    toast("نشست شما پایان یافته است. برای ارسال تغییرات آفلاین دوباره وارد شوید.");
+    await renderSync();
+    return;
+  }
+  if (r.sent || r.rejected) {
+    await loadRemote().catch(() => {});
+    renderAll();
+  }
+  if (r.rejected) toast(`${toFaDigits(r.rejected)} تغییر پذیرفته نشد؛ در بخش «همگام‌سازی» تنظیمات می‌توانید آن‌ها را ببینید.`);
+  else if (r.sent) toast("تغییرات آفلاین همگام شدند.");
+  if ((r.retry || r.offline) && (await Sync.pendingCount()) > 0) retryTimer = setTimeout(syncNow, RETRY_MS);
+  await renderSync();
+}
+
+const OP_LABEL = (op) => {
+  const p = op.path;
+  if (p === "/customers") return "افزودن مشتری";
+  if (p === "/orders") return "ثبت سفارش";
+  if (/\/status$/.test(p)) return "تغییر وضعیت سفارش";
+  if (p.startsWith("/staff")) return "تغییر همکار";
+  if (p.startsWith("/transactions")) return "ثبت یا حذف تراکنش";
+  if (p === "/settings") return "ذخیره تنظیمات";
+  return "تغییر";
+};
+
+// پنل همگام‌سازی در تنظیمات: تعداد تغییرات در صف و فهرست ردشده‌ها (با تلاش مجدد یا حذف)
+async function renderSync() {
+  const panel = $("#syncPanel");
+  if (!panel) return;
+  panel.hidden = !REMOTE;
+  if (!REMOTE) return;
+  const pending = await Sync.pendingCount();
+  const rejected = await Sync.rejectedOps();
+  $("#syncPending").textContent = pending
+    ? `${toFaDigits(pending)} تغییر هنوز به سرور نرسیده است.`
+    : "همه‌ی تغییرات همگام شده‌اند.";
+  $("#rejectedBox").hidden = rejected.length === 0;
+  const list = $("#rejectedList");
+  list.textContent = "";
+  for (const op of rejected) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = `${OP_LABEL(op)}: ${op.reason || "خطا"}`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary-btn";
+    retry.dataset.action = "retry";
+    retry.dataset.opId = op.opId;
+    retry.textContent = "تلاش مجدد";
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "secondary-btn danger";
+    drop.dataset.action = "discard";
+    drop.dataset.opId = op.opId;
+    drop.textContent = "حذف";
+    li.append(text, retry, drop);
+    list.append(li);
+  }
+}
+
+function bindSyncPanel() {
+  $("#syncNowBtn")?.addEventListener("click", () => syncNow());
+  $("#rejectedList")?.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    if (btn.dataset.action === "retry") {
+      await Sync.retryRejected(btn.dataset.opId);
+      syncNow();
+      return;
+    }
+    if (!confirm("این تغییر برای همیشه حذف شود؟ این کار برگشت‌پذیر نیست.")) return;
+    await Sync.discardRejected(btn.dataset.opId);
+    await renderSync();
+  });
+}
+
+// اجرای یک عملیات سرور، سپس خواندن دوباره‌ی داده‌ها و رندر.
+// action مقدار true برمی‌گرداند اگر تغییر فقط در صف آفلاین ثبت شده باشد.
+async function run(action, okMsg, queuedMsg) {
   try {
-    await action();
+    const queued = await action();
     await loadRemote();
     renderAll();
-    if (okMsg) toast(okMsg);
+    renderSync().catch(() => {});
+    if (queued) toast(queuedMsg || "ذخیره شد؛ پس از اتصال به اینترنت همگام می‌شود.");
+    else if (okMsg) toast(okMsg);
     return true;
   } catch (err) {
     if (err.status === 401) {
@@ -150,17 +264,22 @@ async function submitLogin(e) {
   try {
     const session = await Api.login(String(d.get("email")).trim(), String(d.get("password")));
     currentRole = session.user?.role || null;
+    await Sync.setScope(session.user?.id);
     await loadRemote();
     hideGate();
     renderAll();
     e.target.reset();
+    syncNow();
   } catch (err) {
     $("#loginError").textContent = err.message || "ورود ناموفق بود";
   }
 }
 
 async function logout() {
-  try { await Api.logout(); } catch (err) { /* ادامه می‌دهیم */ }
+  const pending = await Sync.pendingCount();
+  if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز ارسال نشده است. این تغییرات روی این دستگاه می‌مانند و با ورود دوباره‌ی همین کاربر ارسال می‌شوند. ادامه می‌دهید؟`)) return;
+  try { await Api.logout(); } catch (err) { /* اتصال نیست؛ نشست محلی پاک می‌شود */ }
+  await Sync.clearScope();
   location.reload();
 }
 
@@ -247,7 +366,7 @@ async function changeOrderStatus(idx) {
   if (!o) return;
   const to = NEXT_STATUS[o.status];
   if (REMOTE) {
-    await run(() => Api.setOrderStatus(o.uuid, to), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
+    await run(() => w("POST", `/orders/${o.uuid}/status`, { to }), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
     return;
   }
   o.status = to;
@@ -324,7 +443,7 @@ async function toggleStaff(id) {
   const s = state.staff.find((x) => String(x.id) === String(id));
   if (!s) return;
   if (REMOTE) {
-    await run(() => Api.patchStaff(s.id, { active: !s.active }), s.active ? "همکار غیرفعال شد." : "همکار فعال شد.");
+    await run(() => w("PATCH", `/staff/${s.id}`, { active: !s.active }), s.active ? "همکار غیرفعال شد." : "همکار فعال شد.");
     return;
   }
   s.active = !s.active;
@@ -368,7 +487,7 @@ function renderFinance() {
 async function deleteTransaction(id) {
   if (!confirm("این تراکنش حذف شود؟")) return;
   if (REMOTE) {
-    await run(() => Api.deleteTransaction(id), "تراکنش حذف شد.");
+    await run(() => w("DELETE", `/transactions/${id}`), "تراکنش حذف شد.");
     return;
   }
   state.transactions = state.transactions.filter((t) => String(t.id) !== String(id));
@@ -446,7 +565,7 @@ async function submitSettings(e) {
   const d = new FormData(e.target);
   const phoneRaw = String(d.get("phone") || "").trim();
   if (REMOTE) {
-    await run(() => Api.saveSettings({
+    await run(() => w("PUT", "/settings", {
       shop_name: String(d.get("shopName") || "").trim() || undefined,
       owner_name: String(d.get("ownerName") || "").trim(),
       phone: phoneRaw,
@@ -539,8 +658,16 @@ async function submitOrder(e) {
     if (dueIso === undefined) { toast("تاریخ تحویل باید به شکل ۱۴۰۵/۰۹/۲۰ باشد."); return; }
     const ok = await run(async () => {
       const found = state.customers.find((c) => c.name === customerName);
-      const customerId = found ? found.uuid : (await Api.createCustomer({ name: customerName })).id;
-      await Api.createOrder({ customer_id: customerId, type, description, price, due_on: dueIso, status });
+      let queued = false;
+      let customerId = found ? found.uuid : null;
+      if (!customerId) {
+        customerId = Sync.uuid();
+        queued = (await w("POST", "/customers", { id: customerId, name: customerName })) || queued;
+      }
+      queued = (await w("POST", "/orders", {
+        id: Sync.uuid(), customer_id: customerId, type, description, price, due_on: dueIso, status,
+      })) || queued;
+      return queued;
     }, "سفارش جدید با موفقیت ثبت شد.");
     if (ok) { closeModal(); go("orders"); }
     return;
@@ -571,7 +698,7 @@ async function submitCustomer(e) {
   const note = String(d.get("note") || "").trim();
 
   if (REMOTE) {
-    const ok = await run(() => Api.createCustomer({ name, phone, note }), "مشتری جدید اضافه شد.");
+    const ok = await run(() => w("POST", "/customers", { id: Sync.uuid(), name, phone, note }), "مشتری جدید اضافه شد.");
     if (ok) { closeModal(); go("customers"); }
     return;
   }
@@ -591,7 +718,7 @@ async function submitStaff(e) {
   const phone = String(d.get("phone") || "").trim();
 
   if (REMOTE) {
-    const ok = await run(() => Api.createStaff({ name, role_title: role, phone }), "همکار جدید اضافه شد.");
+    const ok = await run(() => w("POST", "/staff", { id: Sync.uuid(), name, role_title: role, phone }), "همکار جدید اضافه شد.");
     if (ok) { closeModal(); go("coworkers"); }
     return;
   }
@@ -617,7 +744,8 @@ async function submitTransaction(e) {
   if (REMOTE) {
     const dayIso = formDateToIso(d.get("date"));
     if (dayIso === undefined) { toast("تاریخ باید به شکل ۱۴۰۵/۰۸/۱۶ باشد."); return; }
-    const ok = await run(() => Api.createTransaction({
+    const ok = await run(() => w("POST", "/transactions", {
+      id: Sync.uuid(),
       kind: d.get("kind"),
       category: d.get("category"),
       amount,
@@ -691,6 +819,7 @@ const LEGACY_TIER = { VIP: "vip", "فعال": "active", "معمولی": "regular
 async function importLegacy() {
   const d = legacyData;
   if (!d) return;
+  if (offlineMode) { toast("برای انتقال داده باید به اینترنت وصل باشید."); return; }
   if (!serverIsEmpty()) {
     toast("سرور قبلاً داده دارد؛ انتقال دوباره انجام نمی‌شود.");
     return;
@@ -897,15 +1026,40 @@ async function boot() {
   state.staff = [];
   state.transactions = [];
   renderAll();
+  let online = true;
   try {
     const me = await Api.me();
     currentRole = me.user?.role || null;
+    await Sync.setScope(me.user?.id);
+  } catch (err) {
+    if (!Sync.isNetworkError(err)) {
+      // نشست پایان یافته: نشانه‌ی کاربر پاک می‌شود، داده‌ی صف حذف نمی‌شود
+      await Sync.clearScope();
+      showGate();
+      renderAll();
+      return;
+    }
+    online = false;
+    // بدون اینترنت فقط داده‌ی کاربر آخرین نشست نمایش داده می‌شود
+    const last = await Sync.lastScope();
+    if (!last) {
+      showGate();
+      renderAll();
+      toast("برای ورود به اینترنت نیاز است.");
+      return;
+    }
+    await Sync.setScope(last);
+  }
+  try {
     await loadRemote();
     hideGate();
   } catch (err) {
     showGate();
+    if (Sync.isNetworkError(err)) toast("اتصال به اینترنت نیست و نسخه‌ی ذخیره‌شده‌ای روی این دستگاه نیست.");
   }
   renderAll();
+  renderSync().catch(() => {});
+  if (online) syncNow();
 }
 
 /* ---------- فاز ۳: PWA ---------- */
@@ -934,10 +1088,14 @@ function bindConnectionStatus() {
     if (offline) toast("اتصال اینترنت قطع است؛ تغییرات روی این دستگاه ذخیره می‌شوند.");
   };
   window.addEventListener("offline", show);
-  window.addEventListener("online", () => toast("اتصال برقرار شد."));
+  window.addEventListener("online", () => {
+    toast("اتصال برقرار شد.");
+    syncNow();
+  });
   if (!navigator.onLine) show();
 }
 
 registerServiceWorker();
 bindConnectionStatus();
+bindSyncPanel();
 boot();
