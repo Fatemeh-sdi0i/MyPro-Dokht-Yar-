@@ -150,21 +150,89 @@ function applyRaw(d) {
 // ارسال یک تغییر؛ اگر اتصال نباشد در صف می‌ماند. نتیجه: true یعنی در صف است.
 const w = (method, path, body) => Sync.send(method, path, body).then((r) => r.queued);
 
-// ارسال صف آفلاین به سرور و به‌روزرسانی نمایش
+// ارسال صف آفلاین به سرور. خطای موقت سرور یا نبود اتصال: ۳۰ ثانیه بعد دوباره تلاش می‌شود.
+let retryTimer = null;
+const RETRY_MS = 30000;
 async function syncNow() {
   if (!REMOTE) return;
+  clearTimeout(retryTimer);
   const r = await Sync.flush();
   if (r.auth) {
     showGate();
-    toast("برای همگام‌سازی تغییرات آفلاین دوباره وارد شوید.");
+    toast("نشست شما پایان یافته است. برای ارسال تغییرات آفلاین دوباره وارد شوید.");
+    await renderSync();
     return;
   }
   if (r.sent || r.rejected) {
     await loadRemote().catch(() => {});
     renderAll();
   }
-  if (r.rejected) toast(`${toFaDigits(r.rejected)} تغییر به‌دلیل خطای سرور همگام نشد و کنار گذاشته شد.`);
+  if (r.rejected) toast(`${toFaDigits(r.rejected)} تغییر پذیرفته نشد؛ در بخش «همگام‌سازی» تنظیمات می‌توانید آن‌ها را ببینید.`);
   else if (r.sent) toast("تغییرات آفلاین همگام شدند.");
+  if ((r.retry || r.offline) && (await Sync.pendingCount()) > 0) retryTimer = setTimeout(syncNow, RETRY_MS);
+  await renderSync();
+}
+
+const OP_LABEL = (op) => {
+  const p = op.path;
+  if (p === "/customers") return "افزودن مشتری";
+  if (p === "/orders") return "ثبت سفارش";
+  if (/\/status$/.test(p)) return "تغییر وضعیت سفارش";
+  if (p.startsWith("/staff")) return "تغییر همکار";
+  if (p.startsWith("/transactions")) return "ثبت یا حذف تراکنش";
+  if (p === "/settings") return "ذخیره تنظیمات";
+  return "تغییر";
+};
+
+// پنل همگام‌سازی در تنظیمات: تعداد تغییرات در صف و فهرست ردشده‌ها (با تلاش مجدد یا حذف)
+async function renderSync() {
+  const panel = $("#syncPanel");
+  if (!panel) return;
+  panel.hidden = !REMOTE;
+  if (!REMOTE) return;
+  const pending = await Sync.pendingCount();
+  const rejected = await Sync.rejectedOps();
+  $("#syncPending").textContent = pending
+    ? `${toFaDigits(pending)} تغییر هنوز به سرور نرسیده است.`
+    : "همه‌ی تغییرات همگام شده‌اند.";
+  $("#rejectedBox").hidden = rejected.length === 0;
+  const list = $("#rejectedList");
+  list.textContent = "";
+  for (const op of rejected) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = `${OP_LABEL(op)}: ${op.reason || "خطا"}`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary-btn";
+    retry.dataset.action = "retry";
+    retry.dataset.opId = op.opId;
+    retry.textContent = "تلاش مجدد";
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "secondary-btn danger";
+    drop.dataset.action = "discard";
+    drop.dataset.opId = op.opId;
+    drop.textContent = "حذف";
+    li.append(text, retry, drop);
+    list.append(li);
+  }
+}
+
+function bindSyncPanel() {
+  $("#syncNowBtn")?.addEventListener("click", () => syncNow());
+  $("#rejectedList")?.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn) return;
+    if (btn.dataset.action === "retry") {
+      await Sync.retryRejected(btn.dataset.opId);
+      syncNow();
+      return;
+    }
+    if (!confirm("این تغییر برای همیشه حذف شود؟ این کار برگشت‌پذیر نیست.")) return;
+    await Sync.discardRejected(btn.dataset.opId);
+    await renderSync();
+  });
 }
 
 // اجرای یک عملیات سرور، سپس خواندن دوباره‌ی داده‌ها و رندر.
@@ -174,6 +242,7 @@ async function run(action, okMsg, queuedMsg) {
     const queued = await action();
     await loadRemote();
     renderAll();
+    renderSync().catch(() => {});
     if (queued) toast(queuedMsg || "ذخیره شد؛ پس از اتصال به اینترنت همگام می‌شود.");
     else if (okMsg) toast(okMsg);
     return true;
@@ -195,10 +264,12 @@ async function submitLogin(e) {
   try {
     const session = await Api.login(String(d.get("email")).trim(), String(d.get("password")));
     currentRole = session.user?.role || null;
+    await Sync.setScope(session.user?.id);
     await loadRemote();
     hideGate();
     renderAll();
     e.target.reset();
+    syncNow();
   } catch (err) {
     $("#loginError").textContent = err.message || "ورود ناموفق بود";
   }
@@ -206,8 +277,9 @@ async function submitLogin(e) {
 
 async function logout() {
   const pending = await Sync.pendingCount();
-  if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز به سرور نرسیده است. با خروج از دست می‌روند. ادامه می‌دهید؟`)) return;
-  try { await Api.logout(); } catch (err) { /* ادامه می‌دهیم */ }
+  if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز ارسال نشده است. این تغییرات روی این دستگاه می‌مانند و با ورود دوباره‌ی همین کاربر ارسال می‌شوند. ادامه می‌دهید؟`)) return;
+  try { await Api.logout(); } catch (err) { /* اتصال نیست؛ نشست محلی پاک می‌شود */ }
+  await Sync.clearScope();
   location.reload();
 }
 
@@ -958,13 +1030,25 @@ async function boot() {
   try {
     const me = await Api.me();
     currentRole = me.user?.role || null;
+    await Sync.setScope(me.user?.id);
   } catch (err) {
     if (!Sync.isNetworkError(err)) {
+      // نشست پایان یافته: نشانه‌ی کاربر پاک می‌شود، داده‌ی صف حذف نمی‌شود
+      await Sync.clearScope();
       showGate();
       renderAll();
       return;
     }
     online = false;
+    // بدون اینترنت فقط داده‌ی کاربر آخرین نشست نمایش داده می‌شود
+    const last = await Sync.lastScope();
+    if (!last) {
+      showGate();
+      renderAll();
+      toast("برای ورود به اینترنت نیاز است.");
+      return;
+    }
+    await Sync.setScope(last);
   }
   try {
     await loadRemote();
@@ -974,6 +1058,7 @@ async function boot() {
     if (Sync.isNetworkError(err)) toast("اتصال به اینترنت نیست و نسخه‌ی ذخیره‌شده‌ای روی این دستگاه نیست.");
   }
   renderAll();
+  renderSync().catch(() => {});
   if (online) syncNow();
 }
 
@@ -1012,4 +1097,5 @@ function bindConnectionStatus() {
 
 registerServiceWorker();
 bindConnectionStatus();
+bindSyncPanel();
 boot();

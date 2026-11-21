@@ -37,6 +37,19 @@ jobs:
       - name: Run schema tests
         run: ./backend/db/test/schema_test.sh
 
+  frontend-unit:
+    name: Frontend unit tests (offline sync, Jalali)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run unit tests
+        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js
+
   api:
     name: API tests (Fastify + PostgreSQL)
     runs-on: ubuntu-latest
@@ -146,6 +159,10 @@ jobs:
       - name: Run browser tests
         working-directory: tests/e2e
         run: npm test
+
+      - name: Run offline sync browser test (mock API, two shops, failures)
+        working-directory: tests/e2e
+        run: npm run test:offline
 
       - name: Show server log on failure
         if: failure()

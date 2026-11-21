@@ -8,7 +8,7 @@
  * هنگام انتشار نسخه‌ی جدید، مقدار VERSION را افزایش دهید تا کش قدیمی حذف شود.
  * مسیرها نسبی هستند تا روی GitHub Pages زیرمسیر (/repo/) هم کار کنند.
  */
-const VERSION = "v3.2.0";
+const VERSION = "v3.2.2";
 const CACHE = `dokhtyar-${VERSION}`;
 
 const APP_SHELL = [
@@ -62,6 +62,9 @@ self.addEventListener("fetch", (event) => {
     );
     return;
   }
+
+  // درخواست‌های API هرگز کش نمی‌شوند: داده‌ی هر مزون و کاربر باید همیشه از سرور و با نشست فعلی بیاید
+  if (url.pathname.includes("/api/")) return;
 
   // دارایی‌های خود سایت: کش اول با به‌روزرسانی در پس‌زمینه
   if (url.origin === self.location.origin) {

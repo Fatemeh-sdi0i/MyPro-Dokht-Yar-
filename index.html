@@ -135,6 +135,16 @@
     <section class="page" id="settings">
       <div class="page-heading"><div><p class="eyebrow">شخصی‌سازی</p><h1>تنظیمات</h1></div></div>
       <div class="dashboard-grid">
+        <section class="panel" id="syncPanel" hidden>
+          <h2 class="panel-title">همگام‌سازی</h2>
+          <p class="muted" id="syncPending"></p>
+          <button class="secondary-btn" id="syncNowBtn" type="button">همگام‌سازی الان</button>
+          <div id="rejectedBox" hidden>
+            <h3 class="panel-subtitle">تغییرات پذیرفته‌نشده</h3>
+            <p class="muted">سرور این تغییرات را نپذیرفته است. می‌توانید دوباره تلاش کنید یا حذف کنید.</p>
+            <ul id="rejectedList" class="rejected-list"></ul>
+          </div>
+        </section>
         <section class="panel">
           <h2 class="panel-title">اطلاعات مزون</h2>
           <form id="settingsForm" class="settings-form">
