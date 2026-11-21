@@ -4,17 +4,20 @@
  * - فقط خطاهای دائمی سرور (۴xx به‌جز ۴۰۸، ۴۲۹ و ۴۲۵) عملیات را به فهرست ردشده می‌برند.
  *   خطاهای موقت (۵xx، ۴۲۹، ۴۰۸، نبود اتصال، ناشناخته) صف را دست‌نخورده نگه می‌دارند.
  * - ۴۰۱ ارسال را متوقف می‌کند و صف حذف نمی‌شود.
+ * - خروج به‌صورت عملیات صف است و آخرین عملیات همان کاربر می‌ماند؛ نشست سرور بعد از ارسال‌شدن همه‌ی تغییرات باطل می‌شود.
  * - ایجاد با شناسه‌ی UUID روی کلاینت ساخته می‌شود؛ تکرار ارسال ایمن است.
  */
 (function (root) {
   const DB_NAME = "dokhtyar-sync";
   const DB_VERSION = 1;
+  const LOGOUT_PATH = "/auth/logout";
   const KEY_OF = { queue: "opId", rejected: "opId", cache: "key" };
   const memory = { queue: new Map(), rejected: new Map(), cache: new Map() };
   const TRANSIENT_4XX = new Set([408, 425, 429]);
   let dbPromise = null;
-  let flushing = null;
   let scope = null; // شناسه‌ی کاربر فعلی
+  let lastTs = 0;
+  let lastN = 0;
 
   function openDb() {
     if (dbPromise) return dbPromise;
@@ -77,6 +80,14 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  // ترتیب ثابت و صعودی: زمان به میلی‌ثانیه و شماره‌ی ترتیب در همان میلی‌ثانیه
+  function nextOrder() {
+    const ts = Date.now();
+    if (ts === lastTs) lastN += 1;
+    else { lastTs = ts; lastN = 0; }
+    return ts * 1000 + lastN;
+  }
+
   const isNetworkError = (err) => Boolean(err) && err.status === 0;
 
   // خطای دائمی: ۴xx به‌جز ۴۰۱ (جداگانه) و خطاهای موقت
@@ -87,42 +98,47 @@
   const isAlreadyGone = (op, err) => err.status === 404 && (
     op.method === "DELETE" || op.method === "PATCH" || (op.method === "POST" && /\/status$/.test(op.path)));
 
-  /* ---------- نشست و جداسازی داده‌ها ---------- */
+  /* ---------- نشست ---------- */
 
-  // بعد از ورود یا احراز هویت موفق؛ آخرین کاربر برای نمایش آفلاین ذخیره می‌شود
-  async function setScope(userId) {
+  // بعد از ورود موفق. عملیات خروج قدیمی همین کاربر (نشست قبلی) حذف می‌شود، چون نشست جدید نباید باطل شود.
+  async function beginSession(userId) {
     scope = userId || null;
-    if (scope) await put("cache", { key: "session", userId: scope });
+    if (!scope) return;
+    await put("cache", { key: "last", userId: scope });
+    for (const op of (await all("queue")).filter((o) => o.scope === scope && o.path === LOGOUT_PATH)) {
+      await del("queue", op.opId);
+    }
+    await del("cache", "logout:" + scope);
   }
 
-  // بعد از خروج: داده‌ی صف و کش حذف نمی‌شود، فقط نشست فعلی و نشانه‌ی آخرین کاربر پاک می‌شود
-  async function clearScope() {
+  // پایان نشست بدون خروج از سرور (مثلاً ۴۰۱): کش نمایشی پاک می‌شود، صف می‌ماند
+  async function endSession() {
+    const uid = scope;
     scope = null;
-    await del("cache", "session");
+    if (uid) await del("cache", "snapshot:" + uid);
+    const last = await get("cache", "last");
+    if (last) await del("cache", "last");
   }
 
   // آخرین کاربری که نشستش معتبر بوده (برای بوت آفلاین)؛ بدون نشانه، نمایش داده‌ی کش انجام نمی‌شود
   async function lastScope() {
-    const rec = await get("cache", "session");
+    const rec = await get("cache", "last");
     return rec ? rec.userId : null;
   }
 
-  /* ---------- صف ---------- */
+  function currentUser() { return scope; }
 
-  // ترتیب ثابت و صعودی: زمان به میلی‌ثانیه و شماره‌ی ترتیب در همان میلی‌ثانیه
-  let lastTs = 0;
-  let lastN = 0;
-  function nextOrder() {
-    const ts = Date.now();
-    if (ts === lastTs) lastN += 1;
-    else { lastTs = ts; lastN = 0; }
-    return ts * 1000 + lastN;
-  }
+  /* ---------- صف ---------- */
 
   async function pendingOps() {
     if (!scope) return [];
     const ops = (await all("queue")).filter((o) => o.scope === scope);
     return ops.sort((a, b) => a.order - b.order);
+  }
+
+  // تعداد تغییرات داده (بدون عملیات خروج)
+  async function pendingCount() {
+    return (await pendingOps()).filter((o) => o.path !== LOGOUT_PATH).length;
   }
 
   async function enqueue(method, path, body) {
@@ -179,43 +195,121 @@
     return true;
   }
 
-  /**
-   * ارسال صف به ترتیب. نتیجه: {sent, rejected, auth, offline, retry}
-   * با نخستین خطای موقت یا ۴۰۱ ارسال متوقف می‌شود تا ترتیب وابستگی‌ها حفظ شود.
-   */
-  function flush() {
-    if (flushing) return flushing;
-    flushing = (async () => {
-      const result = { sent: 0, rejected: 0, auth: false, offline: false, retry: false };
-      if (!scope) return result;
-      const ops = await pendingOps();
-      for (const op of ops) {
-        try {
-          await root.Api.call(op.method, op.path, op.body);
+  // ارسال صف یک کاربر به ترتیب. نتیجه: {sent, rejected, auth, offline, retry, loggedOut}
+  // با نخستین خطای موقت یا ۴۰۱ متوقف می‌شود تا ترتیب وابستگی‌ها حفظ شود.
+  async function flushOps(uid) {
+    const result = { sent: 0, rejected: 0, auth: false, offline: false, retry: false, loggedOut: false };
+    const ops = (await all("queue")).filter((o) => o.scope === uid).sort((x, y) => x.order - y.order);
+    for (const op of ops) {
+      const isLogout = op.path === LOGOUT_PATH;
+      try {
+        await root.Api.call(op.method, op.path, op.body);
+        await del("queue", op.opId);
+        result.sent += 1;
+        if (isLogout) result.loggedOut = true;
+      } catch (err) {
+        if (isNetworkError(err)) { result.offline = true; break; }
+        if (isLogout) {
+          // خروج: اگر نشست از قبل نامعتبر باشد، خروج عملاً انجام شده است؛ هرگز ردشده نمی‌شود
+          if (err.status === 401) { result.auth = true; break; }
+          if (isPermanent(err)) { await del("queue", op.opId); result.loggedOut = true; continue; }
+          result.retry = true; break;
+        }
+        if (err && err.status === 401) { result.auth = true; break; }
+        if (isAlreadyGone(op, err)) {
           await del("queue", op.opId);
           result.sent += 1;
-        } catch (err) {
-          if (isNetworkError(err)) { result.offline = true; break; }
-          if (err && err.status === 401) { result.auth = true; break; }
-          if (isAlreadyGone(op, err)) {
-            await del("queue", op.opId);
-            result.sent += 1;
-            continue;
-          }
-          if (isPermanent(err)) {
-            await reject(op, err.message || "خطا");
-            result.rejected += 1;
-            continue;
-          }
-          // خطای موقت سرور: صف دست‌نخورده می‌ماند و بعداً دوباره ارسال می‌شود
-          result.retry = true;
-          break;
+          continue;
         }
+        if (isPermanent(err)) {
+          await reject(op, err.message || "خطا");
+          result.rejected += 1;
+          continue;
+        }
+        // خطای موقت سرور: صف دست‌نخورده می‌ماند و بعداً دوباره ارسال می‌شود
+        result.retry = true;
+        break;
       }
-      return result;
-    })().finally(() => { flushing = null; });
-    return flushing;
+    }
+    return result;
   }
+
+  // هر کاربر یک ارسال فعال دارد؛ ارسال‌های همان کاربر یکی پس از دیگری اجرا می‌شوند
+  let flushing = null;
+  let flushingUid = null;
+  function runFlush(uid) {
+    if (flushing && flushingUid === uid) return flushing;
+    const prev = flushing;
+    const run = (async () => {
+      if (prev) await prev.catch(() => {});
+      return flushOps(uid);
+    })();
+    flushing = run;
+    flushingUid = uid;
+    run.finally(() => { if (flushing === run) { flushing = null; flushingUid = null; } });
+    return run;
+  }
+
+  function flush() {
+    if (!scope) return Promise.resolve({ sent: 0, rejected: 0, auth: false, offline: false, retry: false, loggedOut: false });
+    return runFlush(scope);
+  }
+
+  /* ---------- خروج ---------- */
+
+  /**
+   * درخواست خروج: خروج به صف اضافه می‌شود تا بعد از همه‌ی تغییرات کاربر ارسال شود.
+   * ثبت «در حال خروج» برای این کاربر باقی می‌ماند تا خروج روی سرور تأیید شود.
+   */
+  async function requestLogout() {
+    if (!scope) return false;
+    await put("cache", { key: "logout:" + scope, userId: scope, at: Date.now() });
+    const queued = (await pendingOps()).some((o) => o.path === LOGOUT_PATH);
+    if (!queued) {
+      const op = { opId: uuid(), scope, method: "POST", path: LOGOUT_PATH, body: {}, createdAt: Date.now(), order: nextOrder() };
+      await put("queue", op);
+    }
+    return true;
+  }
+
+  async function hasPendingLogout(userId) {
+    return Boolean(await get("cache", "logout:" + userId));
+  }
+
+  /**
+   * بعد از ارسال صف یک کاربر: اگر خروج تأیید شده یا نشست از قبل نامعتبر باشد، ثبت خروج پاک می‌شود.
+   * کش نمایشی همان کاربر همیشه حذف می‌شود؛ صف و فهرست ردشده (داده‌ی ارسال‌نشده) حفظ می‌شوند.
+   */
+  async function settleLogout(userId, result) {
+    const finished = Boolean(result && (result.loggedOut || result.auth));
+    if (finished) {
+      for (const op of (await all("queue")).filter((o) => o.scope === userId && o.path === LOGOUT_PATH)) {
+        await del("queue", op.opId);
+      }
+      await del("cache", "logout:" + userId);
+    }
+    await del("cache", "snapshot:" + userId);
+    const last = await get("cache", "last");
+    if (last && last.userId === userId) await del("cache", "last");
+    return { finished };
+  }
+
+  /**
+   * خروج‌های نیمه‌تمام همه‌ی کاربران روی این دستگاه را کامل می‌کند (با نشست قدیمی همان کاربر).
+   * scope سراسری را تغییر نمی‌دهد مگر برای ارسال همان کاربر.
+   */
+  async function finishPendingLogouts() {
+    const records = (await all("cache")).filter((r) => typeof r.key === "string" && r.key.startsWith("logout:"));
+    const outcome = [];
+    for (const rec of records) {
+      const r = await runFlush(rec.userId);
+      outcome.push({ userId: rec.userId, ...(await settleLogout(rec.userId, r)) });
+    }
+    return outcome;
+  }
+
+  // بوت آفلاین: نشانه‌ی کاربر آخرین نشست را فقط در حافظه تنظیم می‌کند (نشانه‌ی ذخیره‌شده تغییر نمی‌کند)
+  function restoreScope(userId) { scope = userId || null; }
 
   /* ---------- کش ---------- */
 
@@ -286,9 +380,9 @@
 
   root.Sync = {
     uuid, send, flush, isNetworkError,
-    setScope, clearScope, lastScope,
-    pendingOps, pendingCount: async () => (await pendingOps()).length,
-    rejectedOps, retryRejected, discardRejected,
+    beginSession, endSession, lastScope, currentUser, restoreScope,
+    requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
+    pendingOps, pendingCount, rejectedOps, retryRejected, discardRejected,
     saveCache, loadCache, applyPending,
   };
 })(typeof window !== "undefined" ? window : globalThis);

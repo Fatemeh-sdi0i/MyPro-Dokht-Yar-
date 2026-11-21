@@ -119,6 +119,26 @@ const rawQueueCount = () => page.evaluate(() => new Promise((resolve, reject) =>
     req.onerror = () => reject(req.error);
   };
 }));
+const rawCount = (store) => page.evaluate((store) => new Promise((resolve, reject) => {
+  const open = indexedDB.open("dokhtyar-sync");
+  open.onerror = () => reject(open.error);
+  open.onsuccess = () => {
+    const db = open.result;
+    const req = db.transaction(store, "readonly").objectStore(store).count();
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => reject(req.error);
+  };
+}), store);
+const rawHas = (store, key) => page.evaluate(([store, key]) => new Promise((resolve, reject) => {
+  const open = indexedDB.open("dokhtyar-sync");
+  open.onerror = () => reject(open.error);
+  open.onsuccess = () => {
+    const db = open.result;
+    const req = db.transaction(store, "readonly").objectStore(store).get(key);
+    req.onsuccess = () => { db.close(); resolve(req.result !== undefined); };
+    req.onerror = () => reject(req.error);
+  };
+}), [store, key]);
 const rejectedCount = () => page.evaluate(async () => (await Sync.rejectedOps()).length);
 
 async function login(email, pw) {
@@ -143,7 +163,7 @@ async function addCustomer(name) {
 }
 const names = (shop) => state.shops[shop].customers.map((c) => c.name);
 
-test("جداسازی و همگام‌سازی صف آفلاین بین مزون‌ها", async (t) => {
+test("جداسازی، خروج آفلاین و همگام‌سازی بین مزون‌ها", async (t) => {
   await t.test("ثبت آفلاین در مزون الف و نبود آن روی سرور", async () => {
     await login("a@x.test", "pw-a-123");
     await sleep(400);
@@ -153,28 +173,38 @@ test("جداسازی و همگام‌سازی صف آفلاین بین مزون�
     assert.deepEqual(names("A"), []);
   });
 
-  await t.test("خروج آفلاین: داده‌ی صف در IndexedDB می‌ماند و بدون نشست، داده‌ی مزون نمایش داده نمی‌شود", async () => {
-    await logoutViaUi(); // خروج بدون اینترنت: نشست محلی پاک می‌شود، صف نه
-    assert.equal(await rawQueueCount(), 1, "صف بعد از خروج باید در IndexedDB بماند");
-    await page.reload(); // بوت آفلاین بدون نشانه‌ی کاربر
+  await t.test("خروج آفلاین: صف و ثبت خروج می‌مانند، کش نمایشی پاک می‌شود، و گیت ورود نشان داده می‌شود", async () => {
+    await logoutViaUi();
+    assert.equal(await rawCount("queue"), 2, "تغییر + خروج باید در صف بمانند");
+    assert.equal(await rawHas("cache", "snapshot:user-a"), false, "کش نمایشی باید پاک شود");
+    await page.reload();
     await page.waitForSelector("#loginGate:not([hidden])");
-    await ctx.setOffline(false);
+    assert.notEqual(state.session, null, "سرور هنوز نشست را دارد؛ خروج هنوز ارسال نشده");
+    assert.deepEqual(names("A"), [], "بدون اینترنت داده‌ی مزون نشان داده نمی‌شود");
   });
 
-  await t.test("ورود مزون ب: صف مزون الف دیده یا ارسال نمی‌شود", async () => {
+  await t.test("اتصال بعدی: بوت صف و خروج را کامل می‌کند، نشست سرور باطل می‌شود", async () => {
+    await ctx.setOffline(false);
+    await page.reload();
+    await waitFor(async () => state.session === null && (await rawCount("queue")) === 0, "تکمیل خروج آفلاین");
+    assert.deepEqual(names("A"), ["مشتری آفلاین الف"], "تغییر آفلاین یک‌بار ثبت شده");
+    assert.equal(await rawHas("cache", "logout:user-a"), false);
+    await page.waitForSelector("#loginGate:not([hidden])");
+  });
+
+  await t.test("ورود مزون ب: داده‌ی مزون الف دیده نمی‌شود", async () => {
     await login("b@x.test", "pw-b-456");
     await sleep(800);
-    assert.equal(await pending(), 0, "صف الف نباید برای ب دیده شود");
+    assert.equal(await pending(), 0);
     assert.deepEqual(names("B"), []);
-    assert.deepEqual(names("A"), [], "سرور مزون الف هنوز تغییر را ندیده است");
     await page.click('.nav-item[data-page="customers"]');
     assert.equal((await page.textContent("body")).includes("مشتری آفلاین الف"), false);
     await logoutViaUi();
   });
 
-  await t.test("ورود دوباره‌ی مزون الف: صف ارسال و دقیقاً یک‌بار ثبت می‌شود", async () => {
+  await t.test("ورود دوباره‌ی مزون الف: هیچ تکراری ساخته نمی‌شود", async () => {
     await login("a@x.test", "pw-a-123");
-    await waitFor(async () => (await pending()) === 0, "تخلیه‌ی صف بعد از ورود");
+    await waitFor(async () => (await pending()) === 0, "پایان همگام‌سازی بعد از ورود");
     assert.deepEqual(names("A"), ["مشتری آفلاین الف"]);
     assert.deepEqual(names("B"), []);
   });
