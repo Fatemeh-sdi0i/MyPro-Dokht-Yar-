@@ -75,7 +75,7 @@ test('reports: money balance and order counts come from the data', async () => {
   const cust = await call('POST', '/api/v1/customers', { name: 'سارا موسوی', phone: '09117654321' });
   const o1 = await call('POST', '/api/v1/orders', { customer_id: cust.json().id, type: 'sewing', description: 'مانتو', price: 6200000 });
   await call('POST', '/api/v1/orders', { customer_id: cust.json().id, type: 'repair', description: 'کوتاهی', price: 380000 });
-  await call('POST', `/api/v1/orders/${o1.json().id}/status`, { to: 'delivered' });
+  await call('POST', `/api/v1/orders/${o1.json().id}/status`, { to: 'delivered', version: o1.json().version });
 
   const r = (await call('GET', '/api/v1/reports/summary')).json();
   assert.equal(r.orders.total, 2);

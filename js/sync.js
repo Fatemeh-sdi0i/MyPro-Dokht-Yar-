@@ -163,9 +163,27 @@
     }
   }
 
-  async function reject(op, reason) {
-    await put("rejected", { ...op, reason, rejectedAt: Date.now() });
+  // عملیات ردشده با کد خطای سرور (مثلاً version_conflict) ذخیره می‌شود تا رابط بتواند کمک کند
+  async function reject(op, reason, code) {
+    await put("rejected", { ...op, reason, code: code || null, rejectedAt: Date.now() });
     await del("queue", op.opId);
+  }
+
+  /** یک عملیات ردشده‌ی همین نشست (یا null) */
+  async function rejectedOp(opId) {
+    const rec = await get("rejected", opId);
+    return rec && rec.scope === scope ? rec : null;
+  }
+
+  /**
+   * نسخه‌ای که تغییر وضعیت بعدی این سفارش باید با آن فرستاده شود:
+   * نسخه‌ی دیده‌شده‌ی سرور + تعداد تغییرات وضعیت همین سفارش که هنوز در صف‌اند.
+   * سفارشی که هنوز روی سرور نیست نسخه‌ی ۱ دارد (ستون version پیش‌فرض ۱ است).
+   */
+  async function expectedStatusVersion(orderId, baseVersion) {
+    const path = `/orders/${orderId}/status`;
+    const queued = (await pendingOps()).filter((o) => o.path === path).length;
+    return (baseVersion || 1) + queued;
   }
 
   /** فهرست ردشده‌ها (فقط برای نشست فعلی) */
@@ -175,11 +193,15 @@
       .sort((a, b) => a.rejectedAt - b.rejectedAt);
   }
 
-  /** بازگرداندن یک عملیات ردشده به صف؛ شناسه حفظ می‌شود، پس تکرار ایمن است */
-  async function retryRejected(opId) {
+  /**
+   * بازگرداندن یک عملیات ردشده به صف؛ شناسه حفظ می‌شود، پس تکرار ایمن است.
+   * bodyPatch (اختیاری) فیلدهای بدنه را به‌روز می‌کند، مثلاً نسخه‌ی تازه‌ی سفارش پس از بررسی.
+   */
+  async function retryRejected(opId, bodyPatch) {
     const rec = await get("rejected", opId);
     if (!rec || rec.scope !== scope) return false;
-    const { reason, rejectedAt, ...op } = rec;
+    const { reason, rejectedAt, code, ...op } = rec;
+    if (bodyPatch) op.body = { ...op.body, ...bodyPatch };
     op.createdAt = Date.now();
     op.order = nextOrder();
     await put("queue", op);
@@ -222,7 +244,7 @@
           continue;
         }
         if (isPermanent(err)) {
-          await reject(op, err.message || "خطا");
+          await reject(op, err.message || "خطا", err.code);
           result.rejected += 1;
           continue;
         }
@@ -382,7 +404,7 @@
     uuid, send, flush, isNetworkError,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
-    pendingOps, pendingCount, rejectedOps, retryRejected, discardRejected,
+    pendingOps, pendingCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
     saveCache, loadCache, applyPending,
   };
 })(typeof window !== "undefined" ? window : globalThis);

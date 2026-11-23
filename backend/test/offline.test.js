@@ -147,3 +147,35 @@ test('هم‌زمانی روی شناسه‌ی مزون دیگر: ۴۰۹ و رد
   const other = await call('POST', '/transactions', { id, kind: 'income', category: 'ب', amount: 5 }, cookieB);
   assert.equal(other.statusCode, 409);
 });
+
+// کنترل نسخه‌ی وضعیت سفارش: تغییر بدون نسخه ممنوع؛ نسخه‌ی قدیمی ۴۰۹ می‌گیرد و چیزی را بازنویسی نمی‌کند
+test('تغییر وضعیت بدون نسخه پذیرفته نمی‌شود (۴۰۰)', async () => {
+  const created = await call('POST', '/orders', { customer_id: customerId, type: 'sewing', description: 'نسخه‌الف', price: 1 }, cookieA);
+  const r = await call('POST', `/orders/${created.json().id}/status`, { to: 'progress' }, cookieA);
+  assert.equal(r.statusCode, 400);
+});
+
+test('نسخه‌ی قدیمی: ۴۰۹ و وضعیت دست‌نخورده', async () => {
+  const created = await call('POST', '/orders', { customer_id: customerId, type: 'sewing', description: 'نسخه‌ب', price: 1 }, cookieA);
+  const id = created.json().id;
+  const ok = await call('POST', `/orders/${id}/status`, { to: 'ready', version: 1 }, cookieA);
+  assert.equal(ok.statusCode, 200);
+  const stale = await call('POST', `/orders/${id}/status`, { to: 'progress', version: 1 }, cookieA);
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.json().error, 'version_conflict');
+  const now = await call('GET', `/orders/${id}`, undefined, cookieA);
+  assert.equal(now.json().status, 'ready', 'تغییر جدیدتر نباید بازنویسی شود');
+  assert.equal(now.json().version, 2);
+});
+
+test('نسخه‌ی درست: ۲۰۰، وضعیت تغییر و نسخه یک واحد زیاد می‌شود؛ وضعیت یکسان نسخه را تغییر نمی‌دهد', async () => {
+  const created = await call('POST', '/orders', { customer_id: customerId, type: 'repair', description: 'نسخه‌پ', price: 1 }, cookieA);
+  const id = created.json().id;
+  const moved = await call('POST', `/orders/${id}/status`, { to: 'progress', version: 1 }, cookieA);
+  assert.equal(moved.statusCode, 200);
+  assert.equal(moved.json().status, 'progress');
+  assert.equal(moved.json().version, 2);
+  const same = await call('POST', `/orders/${id}/status`, { to: 'progress', version: 2 }, cookieA);
+  assert.equal(same.statusCode, 200);
+  assert.equal(same.json().version, 2, 'وضعیت یکسان نسخه را بالا نمی‌برد');
+});

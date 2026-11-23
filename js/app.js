@@ -76,6 +76,7 @@ function faDate(iso) {
 function mapOrder(o) {
   return {
     uuid: o.id,
+    version: o.version,
     customer_id: o.customer_id,
     id: o._pending ? "در صف همگام‌سازی" : "۱۴۰۵-" + toFaDigits(pad2(o.order_no).padStart(3, "0")),
     customer: o.customer_name,
@@ -207,7 +208,7 @@ async function renderSync() {
     retry.className = "secondary-btn";
     retry.dataset.action = "retry";
     retry.dataset.opId = op.opId;
-    retry.textContent = "تلاش مجدد";
+    retry.textContent = op.code === "version_conflict" ? "بررسی و تلاش مجدد" : "تلاش مجدد";
     const drop = document.createElement("button");
     drop.type = "button";
     drop.className = "secondary-btn danger";
@@ -219,14 +220,37 @@ async function renderSync() {
   }
 }
 
+// تعارض وضعیت: وضعیت فعلی سرور را می‌خوانیم و فقط با تأیید صریح کاربر نسخه‌ی تازه را می‌فرستیم
+async function resolveStatusConflict(rec) {
+  const orderId = rec.path.split("/")[2];
+  const target = rec.body.to;
+  let current;
+  try {
+    current = await Api.call("GET", `/orders/${orderId}`);
+  } catch (err) {
+    toast(Sync.isNetworkError(err) ? "برای بررسی وضعیت فعلی به اینترنت وصل شوید." : "این سفارش روی سرور پیدا نشد.");
+    return;
+  }
+  if (current.status === target) {
+    await Sync.discardRejected(rec.opId);
+    toast("این وضعیت از قبل روی سرور ثبت شده است.");
+    await renderSync();
+    return;
+  }
+  if (!confirm(`وضعیت فعلی این سفارش روی سرور «${ORDER_STATUS[current.status]}» است. با تأیید، وضعیت به «${ORDER_STATUS[target]}» تغییر می‌کند. ادامه می‌دهید؟`)) return;
+  await Sync.retryRejected(rec.opId, { version: current.version });
+  syncNow();
+}
+
 function bindSyncPanel() {
   $("#syncNowBtn")?.addEventListener("click", () => syncNow());
   $("#rejectedList")?.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-action]");
     if (!btn) return;
     if (btn.dataset.action === "retry") {
-      await Sync.retryRejected(btn.dataset.opId);
-      syncNow();
+      const rec = await Sync.rejectedOp(btn.dataset.opId);
+      if (rec && rec.code === "version_conflict") await resolveStatusConflict(rec);
+      else { await Sync.retryRejected(btn.dataset.opId); syncNow(); }
       return;
     }
     if (!confirm("این تغییر برای همیشه حذف شود؟ این کار برگشت‌پذیر نیست.")) return;
@@ -377,7 +401,9 @@ async function changeOrderStatus(idx) {
   if (!o) return;
   const to = NEXT_STATUS[o.status];
   if (REMOTE) {
-    await run(() => w("POST", `/orders/${o.uuid}/status`, { to }), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
+    // نسخه‌ی دیده‌شده (با تغییرات وضعیت در صف) همراه تغییر می‌رود؛ اگر سرور جلوتر باشد، ۴۰۹ و بدون بازنویسی
+    const version = await Sync.expectedStatusVersion(o.uuid, o.version);
+    await run(() => w("POST", `/orders/${o.uuid}/status`, { to, version }), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
     return;
   }
   o.status = to;

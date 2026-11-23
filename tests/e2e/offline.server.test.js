@@ -132,3 +132,90 @@ test("ثبت آفلاین مشتری و سفارش، خروج آفلاین، و 
     assert.deepEqual(pageErrors, []);
   });
 });
+
+/* ---------- تعارض نسخه‌ی وضعیت سفارش روی سرور واقعی ---------- */
+
+// «دستگاه دوم»: نشست جداگانه‌ی Node، مستقل از مرورگر
+async function deviceTwo() {
+  const res = await fetch(BASE + "/api/v1/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+  });
+  return res.headers.get("set-cookie").split(";")[0];
+}
+async function serverCall(cookie, method, path, body) {
+  const res = await fetch(BASE + "/api/v1" + path, {
+    method, headers: { cookie, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+test("تعارض وضعیت سفارش: بدون بازنویسی، و تلاش مجدد فقط با تأیید", async (t) => {
+  const cookie = await deviceTwo();
+  const custId = crypto.randomUUID();
+  const orderA = crypto.randomUUID();
+  const orderB = crypto.randomUUID();
+  const phone = "0913" + String(stamp).slice(-7);
+
+  await t.test("ساخت مشتری و دو سفارش روی سرور، و بارگذاری در مرورگر", async () => {
+    const c = await serverCall(cookie, "POST", "/customers", { id: custId, name: `مشتری تعارض ${stamp}`, phone });
+    assert.equal(c.status, 201);
+    for (const id of [orderA, orderB]) {
+      const o = await serverCall(cookie, "POST", "/orders", { id, customer_id: custId, type: "sewing", description: `تعارض ${id.slice(0, 6)}`, price: 1000 });
+      assert.equal(o.status, 201);
+    }
+    await page.reload();
+    await sleep(800);
+  });
+
+  await t.test("تغییر آفلاین از نسخه‌ی ۱ و تغییر جلوتر روی دستگاه دوم", async () => {
+    await ctx.setOffline(true);
+    for (const id of [orderA, orderB]) {
+      const idx = await page.evaluate((id) => state.orders.findIndex((o) => o.uuid === id), id);
+      assert.ok(idx >= 0, "سفارش در مرورگر بارگذاری شده");
+      await page.evaluate((i) => changeOrderStatus(i), idx);
+    }
+    await sleep(300);
+    const ops = await page.evaluate(() => Sync.pendingOps());
+    assert.deepEqual(ops.map((o) => o.body.version), [1, 1], "نسخه‌ی دیده‌شده ارسال می‌شود");
+    // دستگاه دوم: سفارش A جلوتر می‌رود، سفارش B به همان وضعیت مقصد می‌رود
+    assert.equal((await serverCall(cookie, "POST", `/orders/${orderA}/status`, { to: "ready", version: 1 })).status, 200);
+    assert.equal((await serverCall(cookie, "POST", `/orders/${orderB}/status`, { to: "progress", version: 1 })).status, 200);
+  });
+
+  await t.test("اتصال: تغییرها به‌عنوان ردشده ثبت می‌شوند و سرور بازنویسی نمی‌شود", async () => {
+    await ctx.setOffline(false);
+    await page.evaluate(() => syncNow());
+    await waitFor(async () => (await page.evaluate(() => Sync.rejectedOps())).length === 2, "ثبت دو تعارض در فهرست ردشده");
+    const rej = await page.evaluate(() => Sync.rejectedOps());
+    assert.deepEqual(rej.map((r) => r.code), ["version_conflict", "version_conflict"]);
+    const a = await serverCall(cookie, "GET", `/orders/${orderA}`);
+    assert.equal(a.body.status, "ready", "تغییر جدیدتر سرور نباید بازنویسی شود");
+    assert.equal(a.body.version, 2);
+  });
+
+  await t.test("تلاش مجدد A با تأیید: وضعیت فعلی خوانده و نسخه‌ی تازه فرستاده می‌شود", async () => {
+    await page.click('.nav-item[data-page="settings"]');
+    await page.waitForSelector("#rejectedBox:not([hidden])");
+    const recA = await page.evaluate((id) => Sync.rejectedOps().then((l) => l.find((r) => r.path.includes(id)).opId), orderA);
+    await page.click(`#rejectedList button[data-action="retry"][data-op-id="${recA}"]`);
+    await waitFor(async () => (await serverCall(cookie, "GET", `/orders/${orderA}`)).body.status === "progress", "اعمال تغییر تأییدشده");
+    const a = await serverCall(cookie, "GET", `/orders/${orderA}`);
+    assert.equal(a.body.version, 3);
+  });
+
+  await t.test("تلاش مجدد B وقتی سرور همان وضعیت را دارد: ردشده پاک می‌شود و نسخه تغییر نمی‌کند", async () => {
+    const recB = await page.evaluate((id) => Sync.rejectedOps().then((l) => l.find((r) => r.path.includes(id)).opId), orderB);
+    await page.click(`#rejectedList button[data-action="retry"][data-op-id="${recB}"]`);
+    await waitFor(async () => (await page.evaluate(() => Sync.rejectedOps())).length === 0, "حذف ردشدهٔ انجام‌شده");
+    const b = await serverCall(cookie, "GET", `/orders/${orderB}`);
+    assert.equal(b.body.status, "progress");
+    assert.equal(b.body.version, 2, "هیچ تغییر تازه‌ای ثبت نشده");
+    assert.equal(await pendingCount(), 0);
+  });
+
+  await t.test("صفحه بدون خطای برنامه کار کرده است", async () => {
+    assert.deepEqual(pageErrors, []);
+  });
+});

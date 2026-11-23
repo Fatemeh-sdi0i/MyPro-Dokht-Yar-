@@ -179,7 +179,8 @@ module.exports = async function ordersRoutes(app, { db }) {
       params: idParam,
       body: {
         type: 'object',
-        required: ['to'],
+        // نسخه‌ی سفارشی که کلاینت دیده است الزامی است؛ اگر سفارش جلوتر باشد، ۴۰۹ می‌دهیم و چیزی را بازنویسی نمی‌کنیم
+        required: ['to', 'version'],
         additionalProperties: false,
         properties: {
           to: { type: 'string', enum: ORDER_STATUSES },
