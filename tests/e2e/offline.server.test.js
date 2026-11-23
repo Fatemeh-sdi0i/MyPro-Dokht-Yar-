@@ -11,6 +11,8 @@ const PASSWORD = process.env.E2E_PASSWORD;
 const stamp = Date.now();
 const CUSTOMER = `مشتری آفلاین سرور ${stamp}`;
 const ORDER_DESC = `سفارش آفلاین ${stamp}`;
+// شماره‌ی یکتا در هر اجرا: شماره‌ی تکراری در همان مزون ۴۰۹ می‌گیرد
+const PHONE = "0912" + String(stamp).slice(-7);
 
 let browser, ctx, page;
 const pageErrors = [];
@@ -74,7 +76,7 @@ test("ثبت آفلاین مشتری و سفارش، خروج آفلاین، و 
     await page.click('.nav-item[data-page="customers"]');
     await page.click("#addCustomerBtn");
     await page.fill('#customerForm input[name="name"]', CUSTOMER);
-    await page.fill('#customerForm input[name="phone"]', "09121234567");
+    await page.fill('#customerForm input[name="phone"]', PHONE);
     await page.click('#customerForm button[type="submit"]');
     await sleep(300);
     await page.click('.nav-item[data-page="orders"]');
