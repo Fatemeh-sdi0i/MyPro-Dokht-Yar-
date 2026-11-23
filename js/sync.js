@@ -402,8 +402,17 @@
     return out;
   }
 
+  // تأخیر تلاش مجدد: ۳۰ ثانیه، دو برابر در هر شکست، سقف ۵ دقیقه.
+  // attempt از ۰ شروع می‌شود (اولین تلاش مجدد).
+  const RETRY_BASE_MS = 30000;
+  const RETRY_MAX_MS = 5 * 60000;
+  function retryDelay(attempt) {
+    const n = Math.max(0, Math.min(Math.floor(Number(attempt)) || 0, 10));
+    return Math.min(RETRY_BASE_MS * 2 ** n, RETRY_MAX_MS);
+  }
+
   root.Sync = {
-    uuid, send, flush, isNetworkError,
+    uuid, send, flush, isNetworkError, retryDelay,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
     pendingOps, pendingCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
