@@ -1157,6 +1157,13 @@ async function bootLocal() {
     onError: () => toast(STORE_ERROR_MSG),
   });
   bindEvents();
+  // اگر نوشتنی هنوز به localStorage نرسیده، بستن یا بارگذاری مجدد صفحه تغییر آخر را از بین می‌برد؛ مرورگر تأیید می‌خواهد
+  window.addEventListener("beforeunload", (e) => {
+    if (LocalStore.pendingCount() > 0) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
   if (st.locked) {
     showLocalLock(st);
     return;

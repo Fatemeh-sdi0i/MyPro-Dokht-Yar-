@@ -30,6 +30,8 @@
   let keyCache = null;
   let memoryKeyRecord = null; // جایگزین وقتی IndexedDB نیست (آزمون‌ها و محیط‌های بدون IndexedDB)
   let chain = Promise.resolve();
+  let pending = 0; // نوشتن‌هایی که هنوز به localStorage نرسیده‌اند
+  let generation = 0; // هر بارگذاری مجدد نسل تازه می‌سازد؛ نوشتن‌های صفِ نسل قبل دیگر انجام نمی‌شوند
   let status = freshStatus();
 
   function freshStatus() {
@@ -229,6 +231,8 @@
 
     apply(seedFn());
     status.ready = true;
+    // کلید را پیش از اولین نوشتن می‌سازیم تا پنجره‌ی ناامن کوتاه بماند (ساخت کلید از IndexedDB کندتر است)
+    try { await getKey(true); } catch (err) { /* نوشتن بعدی خطا را گزارش می‌کند */ }
     return status;
   }
 
@@ -239,17 +243,26 @@
   // ترتیب نوشتن‌ها حفظ می‌شود؛ هر نوشتن با بازخوانی رمزگشایی تأیید می‌شود
   function save(state) {
     if (!isReady()) return false;
+    // وضعیت در همین لحظه ثبت می‌شود؛ تغییرات بعدی نوشتن جدایی می‌سازند
     const text = JSON.stringify(state);
+    const myGen = generation;
+    pending += 1;
     chain = chain
       .then(async () => {
+        if (myGen !== generation) return; // صفحه‌ی قبلی بسته شده: نوشتن ناتمام نباید انجام شود
         const env = await seal(text);
-        storage.setItem(V3_KEY, env);
+        if (myGen !== generation) return;
+        storage.setItem(V3_KEY, env); // یک فراخوانی همزمان؛ یا کاملاً نوشته می‌شود یا اصلاً
         const back = await open(storage.getItem(V3_KEY));
         if (back !== text) throw new Error("بازخوانی پس از نوشتن تأیید نشد");
       })
-      .catch((err) => onError(err));
+      .catch((err) => onError(err))
+      .finally(() => { if (myGen === generation) pending -= 1; });
     return true;
   }
+
+  // تعداد نوشتن‌های در انتظار؛ برای هشدار خروج از صفحه
+  function pendingCount() { return pending; }
 
   // برای خواندن داده‌ی ساده در حالت سرور (انتقال یک‌باره) — بدون تغییر حالت
   async function readPlain() {
@@ -283,11 +296,12 @@
   const testing = {
     dropKey() { memoryKeyRecord = null; keyCache = null; },
     // شبیه‌سازی بارگذاری مجدد صفحه: کلید (که در IndexedDB است) می‌ماند، کش و صف نوشتن پاک می‌شود
-    reset() { keyCache = null; chain = Promise.resolve(); status = freshStatus(); },
+    // نسل جدید: نوشتن‌های در صف نسل قبل (صفحه‌ی بسته‌شده) انجام نمی‌شوند
+    reset() { generation += 1; pending = 0; keyCache = null; chain = Promise.resolve(); status = freshStatus(); },
   };
 
   root.LocalStore = {
-    init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain,
+    init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
     V2_KEY, V3_KEY, UNREADABLE, testing,
   };
 })(typeof window !== "undefined" ? window : globalThis);

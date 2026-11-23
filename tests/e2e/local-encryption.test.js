@@ -259,3 +259,40 @@ test('پشتیبان JSON همچنان دانلود می‌شود و مشتری�
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.ok(data.customers.some((c) => c.name === "پشتیبان-آزمون"), 'مشتری در پشتیبان است');
 });
+
+test('خروج از صفحه: هشدار مرورگر فقط وقتی نوشتنی در انتظار است', async () => {
+  const { page } = await openApp();
+  await showCustomers(page);
+  const unloadPrevented = () => page.evaluate(() => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  });
+  // ذخیره و بررسی در یک مرحله‌ی همزمان انجام می‌شود، پیش از نوشته‌شدن
+  const during = await page.evaluate(() => {
+    LocalStore.save(state);
+    const pending = LocalStore.pendingCount();
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return { pending, prevented: e.defaultPrevented };
+  });
+  assert.equal(during.pending, 1, 'نوشتن در انتظار ثبت شده');
+  assert.equal(during.prevented, true, 'نوشتن در انتظار: مرورگر باید تأیید بگیرد');
+  await page.evaluate(() => LocalStore.flush());
+  assert.equal(await page.evaluate(() => LocalStore.pendingCount()), 0);
+  assert.equal(await unloadPrevented(), false, 'بعد از نوشتن: خروج بی‌هشدار است');
+});
+
+test('سه افزودن پشت‌سرهم مشتری: بعد از تکمیل نوشتن و بارگذاری مجدد همه حفظ می‌شوند', async () => {
+  const { page } = await openApp();
+  await addCustomer(page, 'سریع-یک');
+  await addCustomer(page, 'سریع-دو');
+  await addCustomer(page, 'سریع-سه');
+  await waitFor(() => page.evaluate(() => LocalStore.pendingCount() === 0), "تکمیل نوشتن‌ها");
+  await page.reload();
+  await showCustomers(page);
+  await waitFor(() => page.evaluate(() => {
+    const t = document.querySelector("#customersBody").textContent;
+    return ["سریع-یک", "سریع-دو", "سریع-سه"].every((n) => t.includes(n));
+  }), "نمایش هر سه مشتری");
+});

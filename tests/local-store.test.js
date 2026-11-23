@@ -234,3 +234,82 @@ test('قبل از راه‌اندازی نوشتن انجام نمی‌شود', 
   assert.equal(LS.save({ customers: [] }), false);
   assert.equal(LS.isReady(), false);
 });
+
+test('شمارش نوشتن‌های در انتظار: همزمان با ذخیره بالا می‌رود و بعد از نوشتن به صفر برمی‌گردد', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  assert.equal(LS.pendingCount(), 0);
+  LS.save(target);
+  assert.equal(LS.pendingCount(), 1, 'بلافاصله بعد از ذخیره در انتظار است');
+  LS.save(target);
+  LS.save(target);
+  assert.equal(LS.pendingCount(), 3);
+  await LS.flush();
+  assert.equal(LS.pendingCount(), 0, 'بعد از تکمیل همه‌ی نوشتن‌ها صفر است');
+});
+
+test('بسته شدن صفحه وسط نوشتن: آخرین تغییر ناتمام است ولی پاکت قبلی سالم و کامل می‌ماند', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'حالت-الف', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+
+  target.customers = [{ name: 'حالت-ب-ناتمام', phone: '', note: '' }];
+  LS.save(target); // هنوز نوشته نشده
+  LS.testing.reset(); // بارگذاری مجدد: نسل قبلی دیگر نمی‌نویسد
+
+  await LS.flush();
+  const env = JSON.parse(storage.map.get(V3_KEY));
+  assert.ok(env && env.ct, 'پاکت کامل است و نیمه‌نوشته نیست');
+  const again = await startWith(storage);
+  assert.equal(again.st.locked, false);
+  assert.equal(again.target.customers[0].name, 'حالت-الف', 'آخرین نوشتن کامل‌شده برگشته است');
+});
+
+test('شکست نوشتن روی انبار: پاکت قبلی دست‌نخورده می‌ماند و خطا گزارش می‌شود', async () => {
+  const storage = fakeStorage();
+  let errors = 0;
+  await LS.init({ storage, target: {}, seed, onError: () => { errors += 1; } });
+  const state = seed();
+  state.customers = [{ name: 'سالم', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  const good = storage.map.get(V3_KEY);
+
+  const realSet = storage.setItem;
+  storage.setItem = (k, v) => { if (k === V3_KEY) throw new Error('quota'); return realSet(k, v); };
+  state.customers = [{ name: 'ناموفق', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  assert.equal(errors, 1, 'خطا یک بار گزارش شد');
+  assert.equal(storage.map.get(V3_KEY), good, 'پاکت سالم قبلی نباید آسیب ببیند');
+  assert.equal(LS.pendingCount(), 0);
+});
+
+test('نوشتن‌های سریع پشت‌سرهم: شمارش درست و آخرین وضعیت ذخیره می‌شود', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  for (let i = 0; i < 40; i += 1) {
+    target.customers = [{ name: 'سریع-' + i, phone: '', note: '' }];
+    LS.save(target);
+  }
+  assert.equal(LS.pendingCount(), 40);
+  await LS.flush();
+  assert.equal(LS.pendingCount(), 0);
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'سریع-39');
+});
+
+test('راه‌اندازی تازه: کلید پیش از اولین نوشتن ساخته می‌شود و نوشتن اول کامل می‌شود', async () => {
+  const storage = fakeStorage();
+  await startWith(storage);
+  const st = LS.getStatus();
+  assert.equal(st.ready, true);
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'اولین', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'اولین');
+});
