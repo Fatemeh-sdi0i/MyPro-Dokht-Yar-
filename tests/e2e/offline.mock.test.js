@@ -188,7 +188,7 @@ test("جداسازی، خروج آفلاین و همگام‌سازی بین م�
     await page.reload();
     await waitFor(async () => state.session === null && (await rawCount("queue")) === 0, "تکمیل خروج آفلاین");
     assert.deepEqual(names("A"), ["مشتری آفلاین الف"], "تغییر آفلاین یک‌بار ثبت شده");
-    assert.equal(await rawHas("cache", "logout:user-a"), false);
+    await waitFor(async () => !(await rawHas("cache", "logout:user-a")), "حذف ثبت خروج پس از تکمیل");
     await page.waitForSelector("#loginGate:not([hidden])");
   });
 

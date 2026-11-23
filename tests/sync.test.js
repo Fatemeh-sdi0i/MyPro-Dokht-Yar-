@@ -13,7 +13,7 @@ globalThis.Api = {
 require('../js/sync.js');
 const Sync = globalThis.Sync;
 
-const err = (status, message = 'خطا') => Object.assign(new Error(message), { status });
+const err = (status, message = 'خطا', code = null) => Object.assign(new Error(message), { status, code });
 const netErr = () => err(0, 'network');
 const reset = () => { calls.length = 0; responder = null; };
 let uid = 0;
@@ -279,4 +279,70 @@ test('تسویه‌ی خروج یک کاربر، صف و کش کاربر دیگ�
   await Sync.beginSession(b);
   assert.equal(await Sync.pendingCount(), 1);
   assert.deepEqual((await Sync.loadCache()).customers[0].name, 'ب');
+});
+
+/* ---------- کنترل نسخه‌ی وضعیت سفارش ---------- */
+
+test('تعارض نسخه (۴۰۹) ردشده می‌شود، کد خطا را نگه می‌دارد و هرگز تکرار خودکار نمی‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  const orderId = Sync.uuid();
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', `/orders/${orderId}/status`, { to: 'ready', version: 1 });
+  responder = () => { throw err(409, 'وضعیت این سفارش هم‌زمان تغییر کرده است', 'version_conflict'); };
+  const r = await Sync.flush();
+  assert.equal(r.rejected, 1);
+  assert.equal(r.retry, false);
+  assert.equal(await Sync.pendingCount(), 0);
+  const rec = (await Sync.rejectedOps())[0];
+  assert.equal(rec.code, 'version_conflict');
+  assert.equal(rec.body.version, 1, 'نسخه‌ی ارسال‌شده ثبت می‌ماند');
+});
+
+test('نسخه‌ی تغییر وضعیت بعدی = نسخه‌ی دیده‌شده + تغییرات وضعیت در صف همان سفارش', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  const orderId = Sync.uuid();
+  assert.equal(await Sync.expectedStatusVersion(orderId, 3), 3, 'بدون تغییر در صف');
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', `/orders/${orderId}/status`, { to: 'progress', version: 3 });
+  await Sync.send('POST', `/orders/${orderId}/status`, { to: 'ready', version: 4 });
+  await Sync.send('POST', `/orders/${Sync.uuid()}/status`, { to: 'ready', version: 1 });
+  assert.equal(await Sync.expectedStatusVersion(orderId, 3), 5, 'دو تغییر در صف برای همین سفارش');
+  assert.equal(await Sync.expectedStatusVersion(Sync.uuid(), undefined), 1, 'سفارش تازه (هنوز روی سرور نیست) نسخه‌ی ۱ دارد');
+});
+
+test('تلاش مجدد پس از بررسی: نسخه‌ی تازه جایگزین می‌شود و شناسه‌ی عملیات همان می‌ماند', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  const orderId = Sync.uuid();
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', `/orders/${orderId}/status`, { to: 'progress', version: 1 });
+  responder = () => { throw err(409, 'تعارض', 'version_conflict'); };
+  await Sync.flush();
+  const [rec] = await Sync.rejectedOps();
+  assert.equal(await Sync.retryRejected(rec.opId, { version: 7 }), true);
+  const [queued] = await Sync.pendingOps();
+  assert.equal(queued.opId, rec.opId);
+  assert.equal(queued.body.version, 7);
+  assert.equal(queued.body.to, 'progress', 'وضعیت مقصد تغییر نمی‌کند');
+  assert.equal(await Sync.rejectedOp(rec.opId), null);
+});
+
+test('خروج ارسال شده اما ثبتش تسویه نشده (صفحه پیش از تسویه بسته شد): تسویه‌ی بعدی آن را پاک می‌کند', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  await Sync.requestLogout();
+  responder = null;
+  const r = await Sync.flush(); // خروج ارسال می‌شود؛ settleLogout اجرا نمی‌شود
+  assert.equal(r.loggedOut, true);
+  assert.equal(await Sync.pendingCount(), 0);
+  assert.equal(await Sync.hasPendingLogout(u), true, 'ثبت هنوز مانده است');
+  const done = await Sync.finishPendingLogouts();
+  assert.equal(done.find((d) => d.userId === u).finished, true);
+  assert.equal(await Sync.hasPendingLogout(u), false);
 });

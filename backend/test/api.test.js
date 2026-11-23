@@ -154,7 +154,7 @@ test('orders: status change is logged and stale version is rejected', async () =
 
 test('orders: invalid status and filter values are rejected', async () => {
   const o = (await call('GET', '/api/v1/orders')).json().items[0];
-  const bad = await call('POST', `/api/v1/orders/${o.id}/status`, { to: 'lost' });
+  const bad = await call('POST', `/api/v1/orders/${o.id}/status`, { to: 'lost', version: o.version });
   assert.equal(bad.statusCode, 400);
   const badFilter = await call('GET', '/api/v1/orders?status=lost');
   assert.equal(badFilter.statusCode, 400);
