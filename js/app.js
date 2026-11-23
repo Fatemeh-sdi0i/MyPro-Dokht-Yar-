@@ -26,6 +26,8 @@ function persist() {
   if (!saveState()) toast("ذخیره‌سازی در این مرورگر امکان‌پذیر نیست؛ تغییرات فقط تا بستن صفحه می‌مانند.");
 }
 
+const STORE_ERROR_MSG = "ذخیره‌سازی رمزشده ناموفق بود؛ تغییرات فقط تا بستن صفحه می‌مانند.";
+
 function go(page) {
   $$(".page").forEach((p) => p.classList.toggle("active", p.id === page));
   $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === page));
@@ -229,9 +231,14 @@ async function renderSync() {
   if (!REMOTE) return;
   const pending = await Sync.pendingCount();
   const rejected = await Sync.rejectedOps();
-  const local = await Sync.localDataStatus().catch(() => ({ encrypted: false, unreadable: 0 }));
+  const local = await Sync.localDataStatus().catch(() => ({ encrypted: false, unreadable: 0, unreadableMine: 0 }));
   $("#syncLocked").hidden = !local.unreadable;
-  $("#syncLocked").textContent = local.unreadable ? Sync.LOCKED_MSG + " تا رفع مشکل، ارسال متوقف است." : "";
+  let lockedText = local.unreadable ? Sync.LOCKED_MSG + " تا رفع مشکل، ارسال متوقف است." : "";
+  if (local.unreadable > local.unreadableMine) {
+    lockedText += " موارد ناخوانای کاربران دیگر هم هست؛ تا حذف آن‌ها ذخیره‌ی تغییر جدید ممکن نیست.";
+  }
+  $("#syncLocked").textContent = lockedText;
+  $("#syncDeleteUnreadable").hidden = !local.unreadableMine;
   $("#syncEncryption").textContent = local.encrypted
     ? "داده‌های همگام‌نشده‌ی این مرورگر با کلید غیرقابل استخراج همین دستگاه رمزنگاری می‌شوند."
     : "رمزنگاری در این مرورگر در دسترس نیست؛ داده‌های همگام‌نشده ساده ذخیره می‌شوند.";
@@ -317,7 +324,22 @@ async function resolveStatusConflict(rec) {
   syncNow();
 }
 
+// حذف موارد ناخوانای همین کاربر؛ دو تأیید، فقط برای ردیف‌های ناخوانا
+async function deleteMyUnreadable() {
+  if (!confirm("هشدار: موارد همگام‌نشده‌ی ناخوانای حساب شما (تغییرات صف، ردشده‌ها و کش) برای همیشه حذف می‌شوند و قابل بازیابی نیستند. موارد قابل‌خواندن و داده‌ی کاربران دیگر حذف نمی‌شوند. ادامه می‌دهید؟")) return;
+  const typed = prompt("برای تأیید نهایی، کلمه‌ی «حذف» را دقیقاً وارد کنید:");
+  if (typed !== "حذف") { toast("حذف انجام نشد."); return; }
+  try {
+    const n = await Sync.deleteUnreadable();
+    toast(`${toFaDigits(n)} مورد ناخوانا حذف شد.`);
+  } catch (err) {
+    toast(err.message || "حذف انجام نشد.");
+  }
+  renderSync();
+}
+
 function bindSyncPanel() {
+  $("#syncDeleteUnreadable").addEventListener("click", deleteMyUnreadable);
   $("#syncNowBtn")?.addEventListener("click", () => syncNow());
   $("#rejectedList")?.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-action]");
@@ -893,18 +915,9 @@ async function submitTransaction(e) {
 
 /* ---------- انتقال داده‌های این مرورگر به سرور (یک‌باره) ---------- */
 
-// داده‌ی خام localStorage پیش از پاک شدن حالت سرور (فقط خواندنی)
+// داده‌ی ساده‌ی محلی پیش از پاک شدن حالت سرور (فقط خواندنی؛ از نسخه‌ی رمزشده یا قدیمی)
 let legacyData = null;
 let currentRole = null;
-
-function readLegacy() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (err) {
-    return null;
-  }
-}
 
 function legacyCounts() {
   const d = legacyData || {};
@@ -1134,14 +1147,61 @@ function bindEvents() {
   });
 }
 
-async function boot() {
+// حالت محلی: داده‌ی رمزشده قبل از هر رندر و قبل از فعال شدن رویدادها خوانده می‌شود،
+// تا هیچ تغییری روی داده‌ی نمونه (قبل از خواندن واقعی) ذخیره نشود.
+async function bootLocal() {
+  const st = await LocalStore.init({
+    storage: localStorage,
+    target: state,
+    seed: cloneSeed,
+    onError: () => toast(STORE_ERROR_MSG),
+  });
   bindEvents();
-  if (!REMOTE) {
-    renderAll();
+  if (st.locked) {
+    showLocalLock(st);
     return;
   }
-  // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود
-  legacyData = readLegacy();
+  if (st.migrationPending) toast("انتقال به حالت رمزشده کامل نشد؛ نسخه‌ی ساده‌ی قبلی دست‌نخورده مانده است.");
+  if (st.staleLegacy) toast("یک نسخه‌ی ساده‌ی قدیمی از داده روی این دستگاه مانده و دست‌نخورده است.");
+  renderAll();
+}
+
+const LOCK_REASON = {
+  key_missing: "کلید رمزنگاری این مرورگر پیدا نشد.",
+  decrypt_failed: "داده‌ی رمزشده با کلید این مرورگر باز نمی‌شود.",
+  corrupt: "ساختار داده‌ی ذخیره‌شده خراب است.",
+};
+
+function showLocalLock(st) {
+  $("#localLockReason").textContent = LOCK_REASON[st.reason] || "داده‌ی ذخیره‌شده قابل خواندن نیست.";
+  $("#localLock").hidden = false;
+  $("#localDeleteBtn").addEventListener("click", deleteLocalUnreadable);
+}
+
+// حذف فقط پاکت رمزشده‌ی ناخوانا؛ با دو تأیید جداگانه، و تنها وقتی که داده واقعاً قابل‌خواندن نیست
+async function deleteLocalUnreadable() {
+  if (!confirm("هشدار: داده‌ی رمزشده‌ی این مرورگر با کلید فعلی باز نمی‌شود. با حذف آن، این داده برای همیشه از بین می‌رود و قابل بازیابی نیست. داده‌ی قابل‌خواندن یا نسخه‌ی ساده‌ی قدیمی حذف نمی‌شود. ادامه می‌دهید؟")) return;
+  const typed = prompt("برای تأیید نهایی، کلمه‌ی «حذف» را دقیقاً وارد کنید:");
+  if (typed !== "حذف") { toast("حذف انجام نشد."); return; }
+  try {
+    await LocalStore.deleteUnreadable();
+  } catch (err) {
+    toast(err.message || "حذف انجام نشد.");
+    return;
+  }
+  location.reload();
+}
+
+async function boot() {
+  if (!REMOTE) {
+    await bootLocal();
+    return;
+  }
+  bindEvents();
+  // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود.
+  // مهاجرت ساده→رمزشده همین‌جا هم انجام می‌شود (بدون اعمال روی state).
+  await LocalStore.init({ storage: localStorage, target: null, seed: cloneSeed, onError: () => {} }).catch(() => {});
+  legacyData = await LocalStore.readPlain().catch(() => null);
   state.orders = [];
   state.customers = [];
   state.staff = [];

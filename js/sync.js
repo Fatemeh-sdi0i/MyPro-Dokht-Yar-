@@ -233,10 +233,42 @@
   // وضعیت برای رابط: چند تغییر در صف یا ردشده قابل خواندن نیست
   async function localDataStatus() {
     let unreadable = 0;
+    let unreadableMine = 0;
     for (const name of ["queue", "rejected"]) {
-      unreadable += (await all(name)).filter((r) => r.unreadable).length;
+      for (const r of await all(name)) {
+        if (!r.unreadable) continue;
+        unreadable += 1;
+        if (r.scope === scope) unreadableMine += 1;
+      }
     }
-    return { encrypted: Boolean(subtle()), unreadable };
+    return { encrypted: Boolean(subtle()), unreadable, unreadableMine };
+  }
+
+  /**
+   * حذف فقط ردیف‌های ناخوانای همین کاربر: صف، ردشده‌ها، کش خودش و نشانه‌ی آخرین کاربر (بدون داده‌ی شخصی).
+   * ردیف‌های قابل‌خواندن و ردیف‌های کاربران دیگر دست‌نخورده می‌مانند.
+   * بعد از حذف، اگر ردیف ناخوانای دیگری مانده باشد، نوشتن جدید همچنان مسدود است (کلید تازه نمی‌سازیم).
+   */
+  async function deleteUnreadable() {
+    if (!scope) throw new Error("برای حذف داده‌ی ناخوانا ابتدا وارد حساب شوید");
+    let removed = 0;
+    for (const name of ["queue", "rejected"]) {
+      for (const rec of await all(name)) {
+        if (rec.unreadable && rec.scope === scope) {
+          await del(name, rec.opId);
+          removed += 1;
+        }
+      }
+    }
+    for (const rec of await all("cache")) {
+      const mine = rec.key === "snapshot:" + scope || rec.key === "logout:" + scope;
+      const marker = rec.key === "last";
+      if (rec.unreadable && (mine || marker)) {
+        await del("cache", rec.key);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   function uuid() {
@@ -605,10 +637,15 @@
       deviceKeyCache = null;
     },
     clearDeviceKeyCache: () => { deviceKeyCache = null; },
+    // فقط حافظه‌ی داخلی (آزمون‌های Node): همه‌ی فروشگاه‌ها و کلید پاک می‌شوند
+    resetAll: () => {
+      for (const name of Object.keys(memory)) memory[name].clear();
+      deviceKeyCache = null;
+    },
   };
 
   root.Sync = {
-    uuid, send, flush, isNetworkError, retryDelay, migrateLocalData, localDataStatus, isLocalDataError, LOCKED_MSG,
+    uuid, send, flush, isNetworkError, retryDelay, migrateLocalData, localDataStatus, deleteUnreadable, isLocalDataError, LOCKED_MSG,
     testing,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,

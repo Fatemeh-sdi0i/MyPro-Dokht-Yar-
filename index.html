@@ -138,6 +138,7 @@
         <section class="panel" id="syncPanel" hidden>
           <h2 class="panel-title">همگام‌سازی</h2>
           <p id="syncLocked" class="rejected-dep" hidden></p>
+          <button id="syncDeleteUnreadable" class="secondary-btn danger" type="button" hidden>حذف موارد ناخوانای این حساب…</button>
           <p id="syncEncryption" class="muted"></p>
           <p class="muted" id="syncPending"></p>
           <button class="secondary-btn" id="syncNowBtn" type="button">همگام‌سازی الان</button>
@@ -174,6 +175,14 @@
   </main>
 </div>
 
+<div class="login-gate" id="localLock" hidden>
+  <div class="login-card">
+    <p class="eyebrow">دوخت‌یار</p><h2>داده‌ی این مرورگر قابل خواندن نیست</h2>
+    <p id="localLockReason"></p>
+    <p class="login-error">تا وقتی این داده باقی است، هیچ تغییر جدیدی ذخیره نمی‌شود تا داده‌ی قبلی بازنویسی نشود. اگر نسخه‌ی پشتیبان دارید، پیش از حذف آن را نگه دارید.</p>
+    <button class="primary-btn full" id="localDeleteBtn" type="button">حذف داده‌ی ناخوانا…</button>
+  </div>
+</div>
 <div class="login-gate" id="loginGate" hidden>
   <form class="login-card" id="loginForm">
     <p class="eyebrow">دوخت‌یار</p><h2>ورود مدیر</h2>
@@ -210,6 +219,7 @@
 <script src="js/jalali.js"></script>
 <script src="js/api.js"></script>
 <script src="js/sync.js"></script>
+<script src="js/local-store.js"></script>
 <script src="js/data.js"></script>
 <script src="js/app.js"></script>
 </body>

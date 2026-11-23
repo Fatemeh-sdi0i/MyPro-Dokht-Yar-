@@ -172,6 +172,10 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:encryption
 
+      - name: Run local mode encryption browser test (migration, key loss, scoped deletion)
+        working-directory: tests/e2e
+        run: npm run test:local-encryption
+
       - name: Run offline sync test against real server and PostgreSQL
         working-directory: tests/e2e
         run: npm run test:offline-server

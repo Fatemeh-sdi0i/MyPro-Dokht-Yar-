@@ -1,11 +1,10 @@
 /*
  * داده‌های نمونه (seed)، ذخیره‌سازی محلی و توابع کمکی مشترک.
- * فاز ۲: داده‌ها در localStorage ذخیره می‌شوند (فقط همین مرورگر).
+ * فاز ۲: داده‌ها در localStorage ذخیره می‌شوند (فقط همین مرورگر). از نسخه‌ی رمزشده‌ی v3 (local-store.js) خوانده و نوشته می‌شوند.
  * در فاز بعدی (بک‌اند) این بخش با API جایگزین می‌شود.
  */
 
 const TODAY_JALALI = "۱۴۰۵/۰۸/۲۶"; // امروز ۱۴۰۵/۰۸/۲۶ = ۲۰۲۶-۱۱-۱۷ (کنترل‌شده با js/jalali.js)
-const STORAGE_KEY = "dokhtyar.v2";
 
 const ORDER_STATUS = {
   waiting: "در انتظار شروع",
@@ -66,34 +65,13 @@ function cloneSeed() {
   return JSON.parse(JSON.stringify(SEED));
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return cloneSeed();
-    const parsed = JSON.parse(raw);
-    const seed = cloneSeed();
-    return {
-      orders: Array.isArray(parsed.orders) ? parsed.orders : seed.orders,
-      customers: Array.isArray(parsed.customers) ? parsed.customers : seed.customers,
-      staff: Array.isArray(parsed.staff) ? parsed.staff : seed.staff,
-      transactions: Array.isArray(parsed.transactions) ? parsed.transactions : seed.transactions,
-      settings: { ...seed.settings, ...(parsed.settings || {}) },
-    };
-  } catch (err) {
-    return cloneSeed();
-  }
-}
+// وضعیت در حافظه‌ی صفحه؛ بعد از راه‌اندازی LocalStore.init آن را از حافظه‌ی رمزشده پر می‌کند
+const state = cloneSeed();
 
+// نوشتن رمزشده (ترتیب‌دار). اگر هنوز راه‌اندازی تمام نشده یا داده قفل است، false برمی‌گرداند.
 function saveState() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return true;
-  } catch (err) {
-    return false;
-  }
+  return LocalStore.save(state);
 }
-
-const state = loadState();
 
 /* ---------- توابع کمکی عددی و امنیتی ---------- */
 
