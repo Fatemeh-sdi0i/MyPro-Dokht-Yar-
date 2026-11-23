@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test e2e.test.js",
     "test:import": "node --test import.e2e.test.js",
-    "test:offline": "node --test offline.mock.test.js"
+    "test:offline": "node --test offline.mock.test.js",
+    "test:offline-server": "node --test offline.server.test.js"
   },
   "devDependencies": {
     "playwright": "1.47.2"
