@@ -528,3 +528,22 @@ test('حذف موارد ناخوانا: فقط ردیف‌های ناخوانا�
   await assert.rejects(() => Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'تازه' }),
     (err) => Sync.isLocalDataError(err));
 });
+
+test('خطای IndexedDB داده‌ی سالم را ناخوانا یا حذف‌پذیر نمی‌کند', async () => {
+  Sync.testing.resetAll();
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'سالم-بماند' });
+  const before = await Sync.testing.rawAll('queue');
+
+  Sync.testing.setVaultFailure(true);
+  await assert.rejects(() => Sync.deleteUnreadable());
+  Sync.testing.setVaultFailure(false);
+
+  const after = await Sync.testing.rawAll('queue');
+  assert.deepEqual(after, before, 'ردیف‌ها دست‌نخورده‌اند');
+  const st = await Sync.localDataStatus();
+  assert.equal(st.unreadableMine, 0, 'خطای موقت به‌عنوان داده‌ی ناخوانا شمرده نمی‌شود');
+});
