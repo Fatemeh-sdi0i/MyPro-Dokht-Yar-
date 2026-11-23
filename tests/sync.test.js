@@ -380,3 +380,114 @@ test('مشخصات نمایشی تغییر (meta) همراه ردشده‌ها �
   assert.equal(q.meta.title.length, 120, 'عنوان بیش از ۱۲۰ نویسه کوتاه می‌شود');
   assert.equal(q.meta.detail, '', 'جزئیات نبود، رشته‌ی خالی');
 });
+
+/* ---------- رمزنگاری ذخیره‌سازی ---------- */
+
+test('داده‌ی صف و کش به شکل رمزشده ذخیره می‌شود، اما برای برنامه خوانا است', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'نام-مخفی-۱' }, { title: 'مشتری: نام-مخفی-۱', detail: '09121234567' });
+  await Sync.saveCache({ customers: [{ name: 'نام-مخفی-۲' }] });
+
+  const raw = JSON.stringify(await Sync.testing.rawAll('queue')) + JSON.stringify(await Sync.testing.rawAll('cache'));
+  assert.equal(raw.includes('نام-مخفی'), false, 'متن ساده نباید در ذخیره باشد');
+  assert.equal(raw.includes('09121234567'), false, 'شماره‌ی تماس نباید در ذخیره باشد');
+  assert.ok((await Sync.testing.rawAll('queue')).every((r) => r.sealed && r.body === undefined));
+
+  const [op] = await Sync.pendingOps();
+  assert.equal(op.body.name, 'نام-مخفی-۱', 'خواندن باید رمز را باز کند');
+  assert.equal(op.meta.detail, '09121234567');
+  assert.equal(op.unreadable, undefined);
+  const cached = await Sync.loadCache();
+  assert.equal(cached.customers[0].name, 'نام-مخفی-۲');
+});
+
+test('کلید دستگاه غیرقابل استخراج است', async () => {
+  const [rec] = (await Sync.testing.rawAll('keys')).filter((r) => r.id === 'device');
+  assert.ok(rec, 'کلید باید ذخیره شده باشد');
+  assert.equal(rec.key.extractable, false);
+  assert.deepEqual([...rec.key.usages].sort(), ['decrypt', 'encrypt']);
+});
+
+test('مهاجرت: رکورد ساده‌ی قدیمی رمز می‌شود، بدون از دست رفتن و بدون تکرار', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  const legacyId = Sync.uuid();
+  await Sync.testing.rawPut('queue', {
+    opId: legacyId, scope: u, method: 'POST', path: '/customers', body: { id: 'c-1', name: 'قدیمی-ساده' },
+    meta: { title: 'مشتری: قدیمی-ساده', detail: '' }, createdAt: Date.now(), order: 1,
+  });
+  const before = JSON.stringify(await Sync.testing.rawAll('queue'));
+  assert.ok(before.includes('قدیمی-ساده'), 'پیش از مهاجرت متن ساده است');
+
+  const first = await Sync.migrateLocalData();
+  assert.ok(first.migrated >= 1);
+  const raw = JSON.stringify(await Sync.testing.rawAll('queue'));
+  assert.equal(raw.includes('قدیمی-ساده'), false, 'بعد از مهاجرت متن ساده نباشد');
+
+  const ops = (await Sync.pendingOps()).filter((o) => o.opId === legacyId);
+  assert.equal(ops.length, 1, 'عملیات قدیمی حفظ شده و تکراری نشده');
+  assert.equal(ops[0].body.name, 'قدیمی-ساده');
+
+  const second = await Sync.migrateLocalData();
+  assert.equal(second.migrated, 0, 'اجرای دوباره کاری نمی‌کند');
+});
+
+test('تغییر جای رکورد رمزشده (AAD) شناسایی می‌شود و ارسال نمی‌شود', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'امضاشده' });
+  const rec = (await Sync.testing.rawAll('queue')).find((r) => r.scope === u);
+  await Sync.testing.rawPut('queue', { ...rec, opId: 'جابه‌جا-شده' });
+
+  const [moved] = (await Sync.pendingOps()).filter((o) => o.opId === 'جابه‌جا-شده');
+  assert.equal(moved.unreadable, true, 'رکورد جابه‌جاشده باید نامعتبر باشد');
+  reset();
+  const r = await Sync.flush();
+  assert.equal(r.unreadable, true);
+  assert.equal(calls.length, 0, 'هیچ درخواستی نباید ارسال شود');
+  // اصل رکورد سالم مانده و کپی جابه‌جاشده ناخوانا است؛ هیچ‌کدام حذف نشده‌اند
+  assert.equal(await Sync.pendingCount(), 2, 'هیچ عملیاتی حذف نشده است');
+});
+
+test('کلید گم شده: داده حذف نمی‌شود، کلید تازه ساخته نمی‌شود و همه‌چیز متوقف می‌ماند', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'گم-نشو' });
+  const before = (await Sync.testing.rawAll('queue')).length;
+
+  await Sync.testing.dropDeviceKey();
+
+  // صف با کلید گم‌شده شمرده می‌شود اما قابل خواندن نیست
+  assert.equal(await Sync.pendingCount(), 1, 'تغییر ناخوانا هم در صف شمرده می‌شود');
+  // وضعیت کل مرورگر است (همه‌ی کاربران)؛ باید با تعداد ردیف‌های ناخوانا برابر باشد
+  const status = await Sync.localDataStatus();
+  const sealedRows = (await Sync.testing.rawAll('queue')).length + (await Sync.testing.rawAll('rejected')).length;
+  assert.equal(status.unreadable, sealedRows);
+  assert.ok(status.unreadable >= 1);
+
+  // هیچ کلید تازه‌ای نباید ساخته شود؛ هر نوشتنی با خطای محلی رد می‌شود
+  await assert.rejects(() => Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'جدید' }),
+    (err) => Sync.isLocalDataError(err) && err.code === 'key_missing');
+  const keysNow = await Sync.testing.rawAll('keys');
+  assert.equal(keysNow.length, 0, 'کلید تازه نباید ساخته شده باشد');
+
+  // ارسال متوقف و هیچ‌چیز حذف یا ردشده نمی‌شود
+  reset();
+  const r = await Sync.flush();
+  assert.equal(r.unreadable, true);
+  assert.equal(calls.length, 0);
+  assert.equal((await Sync.testing.rawAll('queue')).length, before, 'هیچ رکوردی حذف نشده');
+  assert.equal((await Sync.rejectedOps()).length, 0);
+
+  // ورود دوباره (نشست جدید) نباید به‌خاطر نبود کلید مسدود شود
+  await Sync.beginSession(user());
+  assert.equal(await Sync.lastScope(), null, 'نشانه‌ی آخرین کاربر خوانا نیست، پس بوت آفلاین بی‌خطر است');
+});

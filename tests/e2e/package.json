@@ -8,7 +8,8 @@
     "test:import": "node --test import.e2e.test.js",
     "test:offline": "node --test offline.mock.test.js",
     "test:offline-server": "node --test offline.server.test.js",
-    "test:pwa": "node --test pwa.test.js"
+    "test:pwa": "node --test pwa.test.js",
+    "test:encryption": "node --test encryption.test.js"
   },
   "devDependencies": {
     "playwright": "1.47.2"

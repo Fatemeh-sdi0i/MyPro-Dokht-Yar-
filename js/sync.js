@@ -9,10 +9,18 @@
  */
 (function (root) {
   const DB_NAME = "dokhtyar-sync";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const LOGOUT_PATH = "/auth/logout";
-  const KEY_OF = { queue: "opId", rejected: "opId", cache: "key" };
-  const memory = { queue: new Map(), rejected: new Map(), cache: new Map() };
+  const KEY_OF = { queue: "opId", rejected: "opId", cache: "key", keys: "id" };
+  const memory = { queue: new Map(), rejected: new Map(), cache: new Map(), keys: new Map() };
+  // فیلدهای بدون رمز (برای شناسایی و ترتیب)؛ بقیه‌ی فیلدهای این فروشگاه‌ها رمزنگاری می‌شوند
+  const CLEAR_FIELDS = {
+    queue: ["opId", "scope", "method", "path", "order", "createdAt"],
+    rejected: ["opId", "scope", "method", "path", "order", "createdAt", "rejectedAt", "code"],
+    cache: ["key"],
+  };
+  const SEALED_STORES = Object.keys(CLEAR_FIELDS);
+  const LOCKED_MSG = "داده‌های همگام‌نشده‌ی این مرورگر قابل خواندن نیستند؛ هیچ‌چیزی حذف نشده است.";
   const TRANSIENT_4XX = new Set([408, 425, 429]);
   let dbPromise = null;
   let scope = null; // شناسه‌ی کاربر فعلی
@@ -51,7 +59,35 @@
     });
   }
 
-  async function put(name, rec) {
+  /* ---------- رمزنگاری در حالت ذخیره ----------
+   * کلید AES-GCM روی دستگاه، غیرقابل استخراج است و در همان IndexedDB نگه‌داری می‌شود.
+   * فیلدهای حساس (نام، شماره، توضیح، مبلغ‌ها و کش) رمز می‌شوند؛ شناسه‌ها بدون رمز می‌مانند.
+   * AAD = نام فروشگاه + کلید رکورد، پس جابه‌جا کردن رکوردها شناسایی می‌شود.
+   * رکوردهای قدیمی ساده خوانده می‌شوند و با migrateLocalData رمز می‌شوند.
+   * کلید گم شود و رکورد رمزشده مانده باشد: هیچ کلید تازه‌ای ساخته نمی‌شود (داده بی‌صدا از بین نمی‌رود)،
+   * رکوردها «قابل‌خواندن‌نیستند» علامت می‌خورند و ارسال متوقف می‌شود. */
+  const te = new TextEncoder();
+  const td = new TextDecoder();
+  const subtle = () => (root.crypto && root.crypto.subtle) || null;
+  let deviceKeyCache = null;
+
+  function localError(code, message) {
+    const e = new Error(message || LOCKED_MSG);
+    e.code = code;
+    e.localData = true;
+    return e;
+  }
+  const isLocalDataError = (err) => Boolean(err && err.localData);
+
+  async function rawAll(name) {
+    const r = await store(name, "readonly", (s) => s.getAll());
+    return r ? (r.value || []) : [...memory[name].values()];
+  }
+  async function rawGet(name, key) {
+    const r = await store(name, "readonly", (s) => s.get(key));
+    return r ? (r.value || null) : (memory[name].get(key) || null);
+  }
+  async function rawPut(name, rec) {
     const r = await store(name, "readwrite", (s) => s.put(rec));
     if (!r) memory[name].set(rec[KEY_OF[name]], rec);
   }
@@ -59,15 +95,148 @@
     const r = await store(name, "readwrite", (s) => s.delete(key));
     if (!r) memory[name].delete(key);
   }
+
+  async function loadDeviceKey() {
+    if (deviceKeyCache) return deviceKeyCache;
+    const rec = await rawGet("keys", "device");
+    if (rec && rec.key) deviceKeyCache = rec.key;
+    return deviceKeyCache;
+  }
+
+  // کلید را فقط وقتی بساز که رکورد رمزشده‌ای وجود ندارد؛ ساخت در همان تراکنش خواندن و نوشتن، پس دو برگه کلید متفاوت نمی‌سازند
+  async function putDeviceKeyIfAbsent(key) {
+    const db = await openDb();
+    if (!db) {
+      const cur = memory.keys.get("device");
+      if (cur) return cur.key;
+      memory.keys.set("device", { id: "device", key, createdAt: Date.now() });
+      return key;
+    }
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("keys", "readwrite");
+      const s = tx.objectStore("keys");
+      let existing = null;
+      const g = s.get("device");
+      g.onsuccess = () => {
+        existing = g.result || null;
+        if (!existing) s.put({ id: "device", key, createdAt: Date.now() });
+      };
+      tx.oncomplete = () => resolve(existing ? existing.key : key);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  async function hasSealedRecords() {
+    for (const name of SEALED_STORES) {
+      if ((await rawAll(name)).some((r) => r && r.sealed)) return true;
+    }
+    return false;
+  }
+
+  async function ensureDeviceKey() {
+    const existing = await loadDeviceKey();
+    if (existing) return existing;
+    if (await hasSealedRecords()) throw localError("key_missing");
+    const fresh = await subtle().generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    deviceKeyCache = await putDeviceKeyIfAbsent(fresh);
+    return deviceKeyCache;
+  }
+
+  async function seal(name, recKey, secret) {
+    const key = await ensureDeviceKey();
+    const iv = root.crypto.getRandomValues(new Uint8Array(12));
+    const ct = await subtle().encrypt(
+      { name: "AES-GCM", iv, additionalData: te.encode(`${name}|${recKey}`) }, key, te.encode(JSON.stringify(secret)));
+    return { v: 1, iv, ct: new Uint8Array(ct) };
+  }
+
+  // شکل ذخیره‌شده: فیلدهای بدون رمز + sealed. بدون WebCrypto رکورد ساده ذخیره می‌شود (فقط در بافت غیرامن).
+  async function toStored(name, rec) {
+    if (!SEALED_STORES.includes(name) || !subtle()) return rec;
+    const clearNames = CLEAR_FIELDS[name];
+    const clear = {};
+    const secret = {};
+    for (const [k, v] of Object.entries(rec)) {
+      if (k === "unreadable" || k === "unreadableCode") continue;
+      (clearNames.includes(k) ? clear : secret)[k] = v;
+    }
+    const sealed = await seal(name, rec[KEY_OF[name]], secret);
+    return { ...clear, sealed };
+  }
+
+  // رکورد خوانده‌شده: اگر رمزنگاری نشده یا رمز باز شد، کامل؛ وگرنه unreadable=true و فیلدهای رمزشده نیستند
+  async function fromStored(name, rec) {
+    if (!rec || !rec.sealed) return rec;
+    const { sealed, ...clear } = rec;
+    try {
+      const key = await loadDeviceKey();
+      if (!key) throw localError("key_missing");
+      const pt = await subtle().decrypt(
+        { name: "AES-GCM", iv: sealed.iv, additionalData: te.encode(`${name}|${clear[KEY_OF[name]]}`) }, key, sealed.ct);
+      return { ...clear, ...JSON.parse(td.decode(pt)) };
+    } catch (err) {
+      return { ...clear, unreadable: true, unreadableCode: (err && err.code) || "decrypt_failed" };
+    }
+  }
+
+  async function put(name, rec) {
+    const stored = await toStored(name, rec);
+    await rawPut(name, stored);
+  }
   async function get(name, key) {
-    const r = await store(name, "readonly", (s) => s.get(key));
-    if (r) return r.value || null;
-    return memory[name].get(key) || null;
+    return fromStored(name, await rawGet(name, key));
   }
   async function all(name) {
-    const r = await store(name, "readonly", (s) => s.getAll());
-    if (r) return r.value || [];
-    return [...memory[name].values()];
+    const rows = await rawAll(name);
+    return Promise.all(rows.map((r) => fromStored(name, r)));
+  }
+
+  // تبدیل رکوردهای قدیمی (ساده) به شکل رمزشده. هر رکورد جداگانه و ایمن است؛ قطع وسط کار بی‌خطر است.
+  // جایگزینی فقط وقتی انجام می‌شود که رکورد هنوز ساده است (اگر در این فاصله تغییر کرده، دست نمی‌زنیم).
+  async function replaceIfStillPlain(name, recKey, sealedRec) {
+    const db = await openDb();
+    if (!db) {
+      const cur = memory[name].get(recKey);
+      if (!cur || cur.sealed) return false;
+      memory[name].set(recKey, sealedRec);
+      return true;
+    }
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(name, "readwrite");
+      const s = tx.objectStore(name);
+      let replaced = false;
+      const g = s.get(recKey);
+      g.onsuccess = () => {
+        const cur = g.result;
+        if (cur && !cur.sealed) { s.put(sealedRec); replaced = true; }
+      };
+      tx.oncomplete = () => resolve(replaced);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  async function migrateLocalData() {
+    if (!subtle()) return { migrated: 0, skipped: true };
+    let migrated = 0;
+    for (const name of SEALED_STORES) {
+      for (const rec of await rawAll(name)) {
+        if (!rec || rec.sealed) continue;
+        const sealedRec = await toStored(name, rec);
+        if (await replaceIfStillPlain(name, rec[KEY_OF[name]], sealedRec)) migrated += 1;
+      }
+    }
+    return { migrated, skipped: false };
+  }
+
+  // وضعیت برای رابط: چند تغییر در صف یا ردشده قابل خواندن نیست
+  async function localDataStatus() {
+    let unreadable = 0;
+    for (const name of ["queue", "rejected"]) {
+      unreadable += (await all(name)).filter((r) => r.unreadable).length;
+    }
+    return { encrypted: Boolean(subtle()), unreadable };
   }
 
   function uuid() {
@@ -104,7 +273,8 @@
   async function beginSession(userId) {
     scope = userId || null;
     if (!scope) return;
-    await put("cache", { key: "last", userId: scope });
+    // نشانه‌ی آخرین کاربر یک بهینه‌سازی برای بوت آفلاین است؛ اگر داده‌ی محلی قفل باشد ورود را نباید مسدود کند
+    try { await put("cache", { key: "last", userId: scope }); } catch (err) { if (!isLocalDataError(err)) throw err; }
     for (const op of (await all("queue")).filter((o) => o.scope === scope && o.path === LOGOUT_PATH)) {
       await del("queue", op.opId);
     }
@@ -123,7 +293,7 @@
   // آخرین کاربری که نشستش معتبر بوده (برای بوت آفلاین)؛ بدون نشانه، نمایش داده‌ی کش انجام نمی‌شود
   async function lastScope() {
     const rec = await get("cache", "last");
-    return rec ? rec.userId : null;
+    return rec && !rec.unreadable ? rec.userId : null;
   }
 
   function currentUser() { return scope; }
@@ -206,7 +376,7 @@
    */
   async function retryRejected(opId, bodyPatch) {
     const rec = await get("rejected", opId);
-    if (!rec || rec.scope !== scope) return false;
+    if (!rec || rec.scope !== scope || rec.unreadable) return false;
     const { reason, rejectedAt, code, ...op } = rec;
     if (bodyPatch) op.body = { ...op.body, ...bodyPatch };
     op.createdAt = Date.now();
@@ -227,8 +397,10 @@
   // ارسال صف یک کاربر به ترتیب. نتیجه: {sent, rejected, auth, offline, retry, loggedOut}
   // با نخستین خطای موقت یا ۴۰۱ متوقف می‌شود تا ترتیب وابستگی‌ها حفظ شود.
   async function flushOps(uid) {
-    const result = { sent: 0, rejected: 0, auth: false, offline: false, retry: false, loggedOut: false };
+    const result = { sent: 0, rejected: 0, auth: false, offline: false, retry: false, loggedOut: false, unreadable: false };
     const ops = (await all("queue")).filter((o) => o.scope === uid).sort((x, y) => x.order - y.order);
+    // یک عملیات قابل‌خواندن‌نیست: ترتیب صف شکسته می‌شود، پس کل صف دست‌نخورده و متوقف می‌ماند
+    if (ops.some((o) => o.unreadable)) { result.unreadable = true; return result; }
     for (const op of ops) {
       const isLogout = op.path === LOGOUT_PATH;
       try {
@@ -344,15 +516,20 @@
 
   /* ---------- کش ---------- */
 
+  // کش فقط برای نمایش آفلاین است؛ خطای قفل داده نباید بارگذاری داده‌ی تازه از سرور را خراب کند
   async function saveCache(snapshot) {
     if (!scope) return;
-    await put("cache", { key: "snapshot:" + scope, data: snapshot, savedAt: Date.now() });
+    try {
+      await put("cache", { key: "snapshot:" + scope, data: snapshot, savedAt: Date.now() });
+    } catch (err) {
+      if (!isLocalDataError(err)) throw err;
+    }
   }
 
   async function loadCache() {
     if (!scope) return null;
     const rec = await get("cache", "snapshot:" + scope);
-    return rec ? rec.data : null;
+    return rec && !rec.unreadable ? rec.data : null;
   }
 
   /* ---------- نمایش داده‌ی در صف ---------- */
@@ -368,7 +545,8 @@
    * اعمال تغییرات در صف روی داده‌ی سرور (فقط برای نمایش؛ منبع حقیقت سرور است).
    * raw: {customers, orders, staff, transactions, settings} به شکل پاسخ API
    */
-  function applyPending(raw, ops) {
+  function applyPending(raw, allOps) {
+    const ops = allOps.filter((o) => !o.unreadable);
     const out = {
       customers: [...(raw.customers || [])],
       orders: [...(raw.orders || [])],
@@ -418,8 +596,20 @@
     return Math.min(RETRY_BASE_MS * 2 ** n, RETRY_MAX_MS);
   }
 
+  // فقط برای آزمون‌ها: دسترسی خام به فروشگاه‌ها و حذف کلید برای شبیه‌سازی از دست رفتن کلید
+  const testing = {
+    rawAll: (name) => rawAll(name),
+    rawPut: (name, rec) => rawPut(name, rec),
+    dropDeviceKey: async () => {
+      await del("keys", "device");
+      deviceKeyCache = null;
+    },
+    clearDeviceKeyCache: () => { deviceKeyCache = null; },
+  };
+
   root.Sync = {
-    uuid, send, flush, isNetworkError, retryDelay,
+    uuid, send, flush, isNetworkError, retryDelay, migrateLocalData, localDataStatus, isLocalDataError, LOCKED_MSG,
+    testing,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
     pendingOps, pendingCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
