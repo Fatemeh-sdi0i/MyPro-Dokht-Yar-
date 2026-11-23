@@ -657,6 +657,8 @@
   };
 
   root.Sync = {
+    // بدون IndexedDB صف فقط در حافظه‌ی همین صفحه است و بعد از بستن صفحه از بین می‌رود
+    isPersistent: () => Boolean(root.indexedDB),
     uuid, send, flush, isNetworkError, retryDelay, migrateLocalData, localDataStatus, deleteUnreadable, isLocalDataError, LOCKED_MSG,
     testing,
     beginSession, endSession, lastScope, currentUser, restoreScope,
