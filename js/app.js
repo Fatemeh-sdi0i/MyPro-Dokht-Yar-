@@ -149,7 +149,8 @@ function applyRaw(d) {
 }
 
 // ارسال یک تغییر؛ اگر اتصال نباشد در صف می‌ماند. نتیجه: true یعنی در صف است.
-const w = (method, path, body) => Sync.send(method, path, body).then((r) => r.queued);
+// meta عنوان و جزئیات نمایشی تغییر را در صف نگه می‌دارد تا فهرست ردشده‌ها بگوید کدام مورد مشکل داشت.
+const w = (method, path, body, meta) => Sync.send(method, path, body, meta).then((r) => r.queued);
 
 // ارسال صف آفلاین به سرور. خطای موقت سرور یا نبود اتصال: با تأخیر فزاینده دوباره تلاش می‌شود.
 let retryTimer = null;
@@ -189,7 +190,37 @@ const OP_LABEL = (op) => {
   return "تغییر";
 };
 
-// پنل همگام‌سازی در تنظیمات: تعداد تغییرات در صف و فهرست ردشده‌ها (با تلاش مجدد یا حذف)
+// متن کمکی برای هر کد خطای سرور؛ کدهای ناشناخته همان پیام سرور را نشان می‌دهند
+const REJECT_HINT = {
+  customer_not_found: "مشتری مربوط روی سرور ثبت نشده است.",
+  conflict: "این اطلاعات با مورد موجود روی سرور تداخل دارد (مثلاً شماره‌ی تماس تکراری).",
+  id_taken: "این شناسه قبلاً برای مزون دیگری استفاده شده است.",
+  not_found: "موردی که می‌خواستید تغییر دهید روی سرور پیدا نشد.",
+  version_conflict: "همین مورد هم‌زمان روی دستگاه دیگری تغییر کرده است.",
+  invalid_phone: "شماره‌ی موبایل معتبر نیست.",
+  invalid_date: "تاریخ وارد شده معتبر نیست.",
+  forbidden: "این کار فقط برای مدیر مجاز است.",
+};
+// توضیح کوتاه برای کاربر؛ اگر پیام سرور متفاوت باشد، همراه آن هم نشان داده می‌شود (برای پشتیبانی)
+const rejectReason = (op) => {
+  const hint = REJECT_HINT[op.code];
+  if (!hint) return op.reason || "خطای ناشناخته از سرور";
+  return op.reason && op.reason !== hint ? `${hint} (${op.reason})` : hint;
+};
+
+// سفارشی که مشتری‌اش ردشده، به آن مشتری وابسته است و با تلاش مجدد هم پذیرفته نمی‌شود
+function dependencyNote(op, rejected) {
+  if (op.path !== "/orders" || !op.body || !op.body.customer_id) return "";
+  const parent = rejected.find((r) => r.path === "/customers" && r.body && r.body.id === op.body.customer_id);
+  return parent ? "این سفارش به مشتری ردشده‌ی بالا وابسته است. ابتدا آن مشتری را اصلاح یا حذف کنید." : "";
+}
+
+const fmtTime = (ms) => {
+  try { return new Date(ms).toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" }); }
+  catch (e) { return ""; }
+};
+
+// پنل همگام‌سازی در تنظیمات: تعداد تغییرات در صف و فهرست ردشده‌ها با جزئیات، تلاش مجدد یا حذف
 async function renderSync() {
   const panel = $("#syncPanel");
   if (!panel) return;
@@ -201,12 +232,43 @@ async function renderSync() {
     ? `${toFaDigits(pending)} تغییر هنوز به سرور نرسیده است.`
     : "همه‌ی تغییرات همگام شده‌اند.";
   $("#rejectedBox").hidden = rejected.length === 0;
+  $("#rejectedCount").textContent = `${toFaDigits(rejected.length)} مورد نیاز به بررسی دارد.`;
   const list = $("#rejectedList");
   list.textContent = "";
   for (const op of rejected) {
     const li = document.createElement("li");
-    const text = document.createElement("span");
-    text.textContent = `${OP_LABEL(op)}: ${op.reason || "خطا"}`;
+    li.className = "rejected-item";
+
+    const title = document.createElement("strong");
+    title.textContent = (op.meta && op.meta.title) || OP_LABEL(op);
+
+    const kind = document.createElement("span");
+    kind.className = "muted";
+    kind.textContent = [OP_LABEL(op), op.rejectedAt ? fmtTime(op.rejectedAt) : ""].filter(Boolean).join(" · ");
+
+    const parts = [title, kind];
+    if (op.meta && op.meta.detail) {
+      const detail = document.createElement("span");
+      detail.className = "muted";
+      detail.textContent = op.meta.detail;
+      parts.push(detail);
+    }
+
+    const reason = document.createElement("p");
+    reason.className = "rejected-reason";
+    reason.textContent = "دلیل: " + rejectReason(op);
+    parts.push(reason);
+
+    const dep = dependencyNote(op, rejected);
+    if (dep) {
+      const note = document.createElement("p");
+      note.className = "rejected-dep";
+      note.textContent = dep;
+      parts.push(note);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "rejected-actions";
     const retry = document.createElement("button");
     retry.type = "button";
     retry.className = "secondary-btn";
@@ -219,7 +281,9 @@ async function renderSync() {
     drop.dataset.action = "discard";
     drop.dataset.opId = op.opId;
     drop.textContent = "حذف";
-    li.append(text, retry, drop);
+    actions.append(retry, drop);
+
+    li.append(...parts, actions);
     list.append(li);
   }
 }
@@ -407,7 +471,7 @@ async function changeOrderStatus(idx) {
   if (REMOTE) {
     // نسخه‌ی دیده‌شده (با تغییرات وضعیت در صف) همراه تغییر می‌رود؛ اگر سرور جلوتر باشد، ۴۰۹ و بدون بازنویسی
     const version = await Sync.expectedStatusVersion(o.uuid, o.version);
-    await run(() => w("POST", `/orders/${o.uuid}/status`, { to, version }), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
+    await run(() => w("POST", `/orders/${o.uuid}/status`, { to, version }, { title: `تغییر وضعیت سفارش ${o.customer || ""}`, detail: `به «${ORDER_STATUS[to]}»` }), "وضعیت سفارش به «" + ORDER_STATUS[to] + "» تغییر کرد.");
     return;
   }
   o.status = to;
@@ -484,7 +548,7 @@ async function toggleStaff(id) {
   const s = state.staff.find((x) => String(x.id) === String(id));
   if (!s) return;
   if (REMOTE) {
-    await run(() => w("PATCH", `/staff/${s.id}`, { active: !s.active }), s.active ? "همکار غیرفعال شد." : "همکار فعال شد.");
+    await run(() => w("PATCH", `/staff/${s.id}`, { active: !s.active }, { title: `همکار: ${s.name}`, detail: s.active ? "غیرفعال کردن" : "فعال کردن" }), s.active ? "همکار غیرفعال شد." : "همکار فعال شد.");
     return;
   }
   s.active = !s.active;
@@ -528,7 +592,7 @@ function renderFinance() {
 async function deleteTransaction(id) {
   if (!confirm("این تراکنش حذف شود؟")) return;
   if (REMOTE) {
-    await run(() => w("DELETE", `/transactions/${id}`), "تراکنش حذف شد.");
+    await run(() => w("DELETE", `/transactions/${id}`, undefined, { title: "حذف تراکنش", detail: "" }), "تراکنش حذف شد.");
     return;
   }
   state.transactions = state.transactions.filter((t) => String(t.id) !== String(id));
@@ -612,7 +676,7 @@ async function submitSettings(e) {
       phone: phoneRaw,
       address: String(d.get("address") || "").trim(),
       currency: String(d.get("currency") || "").trim() || undefined,
-    }), "تنظیمات ذخیره شد.");
+    }, { title: "تنظیمات مزون", detail: "" }), "تنظیمات ذخیره شد.");
     return;
   }
   state.settings = {
@@ -703,11 +767,11 @@ async function submitOrder(e) {
       let customerId = found ? found.uuid : null;
       if (!customerId) {
         customerId = Sync.uuid();
-        queued = (await w("POST", "/customers", { id: customerId, name: customerName })) || queued;
+        queued = (await w("POST", "/customers", { id: customerId, name: customerName }, { title: `مشتری: ${customerName}`, detail: "" })) || queued;
       }
       queued = (await w("POST", "/orders", {
         id: Sync.uuid(), customer_id: customerId, type, description, price, due_on: dueIso, status,
-      })) || queued;
+      }, { title: `سفارش: ${customerName}`, detail: description || type })) || queued;
       return queued;
     }, "سفارش جدید با موفقیت ثبت شد.");
     if (ok) { closeModal(); go("orders"); }
@@ -739,7 +803,7 @@ async function submitCustomer(e) {
   const note = String(d.get("note") || "").trim();
 
   if (REMOTE) {
-    const ok = await run(() => w("POST", "/customers", { id: Sync.uuid(), name, phone, note }), "مشتری جدید اضافه شد.");
+    const ok = await run(() => w("POST", "/customers", { id: Sync.uuid(), name, phone, note }, { title: `مشتری: ${name}`, detail: phone }), "مشتری جدید اضافه شد.");
     if (ok) { closeModal(); go("customers"); }
     return;
   }
@@ -759,7 +823,7 @@ async function submitStaff(e) {
   const phone = String(d.get("phone") || "").trim();
 
   if (REMOTE) {
-    const ok = await run(() => w("POST", "/staff", { id: Sync.uuid(), name, role_title: role, phone }), "همکار جدید اضافه شد.");
+    const ok = await run(() => w("POST", "/staff", { id: Sync.uuid(), name, role_title: role, phone }, { title: `همکار: ${name}`, detail: role || "" }), "همکار جدید اضافه شد.");
     if (ok) { closeModal(); go("coworkers"); }
     return;
   }
@@ -792,7 +856,7 @@ async function submitTransaction(e) {
       amount,
       occurred_on: dayIso,
       note: String(d.get("note") || "").trim(),
-    }), "تراکنش ثبت شد.");
+    }, { title: `تراکنش: ${toFaDigits(String(amount))} تومان`, detail: String(d.get("note") || "").trim() }), "تراکنش ثبت شد.");
     if (ok) { closeModal(); go("finance"); }
     return;
   }

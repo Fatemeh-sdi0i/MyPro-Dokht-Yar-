@@ -141,9 +141,16 @@
     return (await pendingOps()).filter((o) => o.path !== LOGOUT_PATH).length;
   }
 
-  async function enqueue(method, path, body) {
+  // meta توضیح کوتاه برای نمایش در فهرست ردشده‌ها است (عنوان و جزئیات)، نه داده‌ی تازه.
+  function cleanMeta(meta) {
+    if (!meta || typeof meta !== "object") return null;
+    const clip = (v) => String(v || "").slice(0, 120);
+    return { title: clip(meta.title), detail: clip(meta.detail) };
+  }
+
+  async function enqueue(method, path, body, meta) {
     if (!scope) throw new Error("نشست فعال نیست");
-    const op = { opId: uuid(), scope, method, path, body, createdAt: Date.now(), order: nextOrder() };
+    const op = { opId: uuid(), scope, method, path, body, meta: cleanMeta(meta), createdAt: Date.now(), order: nextOrder() };
     await put("queue", op);
     return op;
   }
@@ -152,13 +159,13 @@
    * ارسال یک تغییر. اگر اتصال نباشد در صف می‌ماند و queued=true برمی‌گرداند.
    * سایر خطاها (اعتبارسنجی، دسترسی) به فراخواننده برمی‌گردند.
    */
-  async function send(method, path, body) {
+  async function send(method, path, body, meta) {
     try {
       await root.Api.call(method, path, body);
       return { queued: false };
     } catch (err) {
       if (!isNetworkError(err)) throw err;
-      await enqueue(method, path, body);
+      await enqueue(method, path, body, meta);
       return { queued: true };
     }
   }
