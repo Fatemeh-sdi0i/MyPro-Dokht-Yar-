@@ -170,6 +170,7 @@ async function syncNow() {
     await loadRemote().catch(() => {});
     renderAll();
   }
+  if (r.unreadable) toast(Sync.LOCKED_MSG);
   if (r.rejected) toast(`${toFaDigits(r.rejected)} تغییر پذیرفته نشد؛ در بخش «همگام‌سازی» تنظیمات می‌توانید آن‌ها را ببینید.`);
   else if (r.sent) toast("تغییرات آفلاین همگام شدند.");
   if ((r.retry || r.offline) && (await Sync.pendingCount()) > 0) {
@@ -228,6 +229,12 @@ async function renderSync() {
   if (!REMOTE) return;
   const pending = await Sync.pendingCount();
   const rejected = await Sync.rejectedOps();
+  const local = await Sync.localDataStatus().catch(() => ({ encrypted: false, unreadable: 0 }));
+  $("#syncLocked").hidden = !local.unreadable;
+  $("#syncLocked").textContent = local.unreadable ? Sync.LOCKED_MSG + " تا رفع مشکل، ارسال متوقف است." : "";
+  $("#syncEncryption").textContent = local.encrypted
+    ? "داده‌های همگام‌نشده‌ی این مرورگر با کلید غیرقابل استخراج همین دستگاه رمزنگاری می‌شوند."
+    : "رمزنگاری در این مرورگر در دسترس نیست؛ داده‌های همگام‌نشده ساده ذخیره می‌شوند.";
   $("#syncPending").textContent = pending
     ? `${toFaDigits(pending)} تغییر هنوز به سرور نرسیده است.`
     : "همه‌ی تغییرات همگام شده‌اند.";
@@ -240,7 +247,7 @@ async function renderSync() {
     li.className = "rejected-item";
 
     const title = document.createElement("strong");
-    title.textContent = (op.meta && op.meta.title) || OP_LABEL(op);
+    title.textContent = op.unreadable ? "مورد قابل خواندن نیست" : ((op.meta && op.meta.title) || OP_LABEL(op));
 
     const kind = document.createElement("span");
     kind.className = "muted";
@@ -256,7 +263,7 @@ async function renderSync() {
 
     const reason = document.createElement("p");
     reason.className = "rejected-reason";
-    reason.textContent = "دلیل: " + rejectReason(op);
+    reason.textContent = op.unreadable ? "دلیل: این مورد با کلید این دستگاه باز نمی‌شود." : "دلیل: " + rejectReason(op);
     parts.push(reason);
 
     const dep = dependencyNote(op, rejected);
@@ -281,7 +288,7 @@ async function renderSync() {
     drop.dataset.action = "discard";
     drop.dataset.opId = op.opId;
     drop.textContent = "حذف";
-    actions.append(retry, drop);
+    actions.append(...(op.unreadable ? [drop] : [retry, drop]));
 
     li.append(...parts, actions);
     list.append(li);
@@ -380,9 +387,18 @@ async function logout() {
   }
   const pending = await Sync.pendingCount();
   if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز ارسال نشده است. این تغییرات روی این دستگاه می‌مانند و به محض اتصال ارسال می‌شوند؛ سپس خروج ثبت می‌شود. ادامه می‌دهید؟`)) return;
-  await Sync.requestLogout();
-  const r = await Sync.flush();
-  await Sync.settleLogout(uid, r);
+  try {
+    await Sync.requestLogout();
+    const r = await Sync.flush();
+    await Sync.settleLogout(uid, r);
+  } catch (err) {
+    // داده‌ی محلی قابل خواندن نیست: خروج در صف ثبت نمی‌شود؛ اگر اینترنت هست خروج مستقیم انجام می‌شود
+    if (!Sync.isLocalDataError(err)) throw err;
+    if (navigator.onLine) {
+      try { await Api.logout(); } catch (e) { /* نشست از قبل نامعتبر */ }
+    }
+    toast(Sync.LOCKED_MSG);
+  }
   location.reload();
 }
 
@@ -1131,7 +1147,8 @@ async function boot() {
   state.staff = [];
   state.transactions = [];
   renderAll();
-  // خروج‌های ناتمام را قبل از خواندن نشست کامل کن (با همان نشست قدیمی)
+  // داده‌ی قدیمی ساده را یک‌بار رمز کن (ایمن و تکرارشونده)، سپس خروج‌های ناتمام را با نشست قدیمی کامل کن
+  await Sync.migrateLocalData().catch(() => {});
   await Sync.finishPendingLogouts().catch(() => {});
   let online = true;
   try {
