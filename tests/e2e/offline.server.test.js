@@ -105,9 +105,12 @@ test("ثبت آفلاین مشتری و سفارش، خروج آفلاین، و 
 
   await t.test("ورود دوباره: هر تغییر دقیقاً یک‌بار روی PostgreSQL است", async () => {
     await login();
+    const rejected = await page.evaluate(() => Sync.rejectedOps());
     const customers = await api("GET", "/customers?q=" + encodeURIComponent(CUSTOMER));
     const matched = customers.body.items.filter((c) => c.name === CUSTOMER);
-    assert.equal(matched.length, 1, "مشتری یک‌بار ثبت شده");
+    assert.equal(matched.length, 1,
+      "مشتری یک‌بار ثبت شده | ردشده‌ها=" + JSON.stringify(rejected.map((r) => [r.method, r.path, r.reason])) +
+      " | نتیجه‌ی جست‌وجو=" + JSON.stringify(customers.body.items.map((c) => c.name)).slice(0, 400));
     const orders = await api("GET", "/orders?q=" + encodeURIComponent(ORDER_DESC));
     const ords = orders.body.items.filter((o) => o.description === ORDER_DESC);
     assert.equal(ords.length, 1, "سفارش یک‌بار ثبت شده");
