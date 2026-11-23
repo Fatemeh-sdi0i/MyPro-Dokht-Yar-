@@ -346,3 +346,14 @@ test('خروج ارسال شده اما ثبتش تسویه نشده (صفحه �
   assert.equal(done.find((d) => d.userId === u).finished, true);
   assert.equal(await Sync.hasPendingLogout(u), false);
 });
+
+test('تأخیر تلاش مجدد: ۳۰ ثانیه، دو برابر شدن، سقف ۵ دقیقه', () => {
+  assert.equal(Sync.retryDelay(0), 30000);
+  assert.equal(Sync.retryDelay(1), 60000);
+  assert.equal(Sync.retryDelay(2), 120000);
+  assert.equal(Sync.retryDelay(3), 240000);
+  assert.equal(Sync.retryDelay(4), 300000, 'سقف ۵ دقیقه');
+  assert.equal(Sync.retryDelay(50), 300000, 'شمارنده‌ی بزرگ هم از سقف نمی‌گذرد');
+  assert.equal(Sync.retryDelay(-3), 30000, 'مقدار نامعتبر به پایه برمی‌گردد');
+  assert.equal(Sync.retryDelay(NaN), 30000);
+});

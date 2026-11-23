@@ -151,13 +151,14 @@ function applyRaw(d) {
 // ارسال یک تغییر؛ اگر اتصال نباشد در صف می‌ماند. نتیجه: true یعنی در صف است.
 const w = (method, path, body) => Sync.send(method, path, body).then((r) => r.queued);
 
-// ارسال صف آفلاین به سرور. خطای موقت سرور یا نبود اتصال: ۳۰ ثانیه بعد دوباره تلاش می‌شود.
+// ارسال صف آفلاین به سرور. خطای موقت سرور یا نبود اتصال: با تأخیر فزاینده دوباره تلاش می‌شود.
 let retryTimer = null;
-const RETRY_MS = 30000;
+let retryAttempt = 0;
 async function syncNow() {
   if (!REMOTE) return;
   clearTimeout(retryTimer);
   const r = await Sync.flush();
+  if (r.sent || r.rejected || !(r.retry || r.offline)) retryAttempt = 0;
   if (r.auth) {
     showGate();
     toast("نشست شما پایان یافته است. برای ارسال تغییرات آفلاین دوباره وارد شوید.");
@@ -170,7 +171,10 @@ async function syncNow() {
   }
   if (r.rejected) toast(`${toFaDigits(r.rejected)} تغییر پذیرفته نشد؛ در بخش «همگام‌سازی» تنظیمات می‌توانید آن‌ها را ببینید.`);
   else if (r.sent) toast("تغییرات آفلاین همگام شدند.");
-  if ((r.retry || r.offline) && (await Sync.pendingCount()) > 0) retryTimer = setTimeout(syncNow, RETRY_MS);
+  if ((r.retry || r.offline) && (await Sync.pendingCount()) > 0) {
+    retryTimer = setTimeout(syncNow, Sync.retryDelay(retryAttempt));
+    retryAttempt += 1;
+  }
   await renderSync();
 }
 
