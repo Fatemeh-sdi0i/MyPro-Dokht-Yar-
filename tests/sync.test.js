@@ -357,3 +357,26 @@ test('تأخیر تلاش مجدد: ۳۰ ثانیه، دو برابر شدن، �
   assert.equal(Sync.retryDelay(-3), 30000, 'مقدار نامعتبر به پایه برمی‌گردد');
   assert.equal(Sync.retryDelay(NaN), 30000);
 });
+
+test('مشخصات نمایشی تغییر (meta) همراه ردشده‌ها می‌ماند و طولش محدود است', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'الف' }, { title: 'مشتری: الف', detail: '0912' });
+  responder = () => { throw err(409, 'تکراری', 'conflict'); };
+  await Sync.flush();
+  const [rej] = await Sync.rejectedOps();
+  assert.equal(rej.meta.title, 'مشتری: الف');
+  assert.equal(rej.meta.detail, '0912');
+  assert.equal(rej.code, 'conflict');
+
+  reset();
+  const v = user();
+  await Sync.beginSession(v);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/staff', { id: Sync.uuid(), name: 'ب' }, { title: 'x'.repeat(500) });
+  const [q] = await Sync.pendingOps();
+  assert.equal(q.meta.title.length, 120, 'عنوان بیش از ۱۲۰ نویسه کوتاه می‌شود');
+  assert.equal(q.meta.detail, '', 'جزئیات نبود، رشته‌ی خالی');
+});
