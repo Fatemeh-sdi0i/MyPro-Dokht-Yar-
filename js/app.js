@@ -201,7 +201,12 @@ const REJECT_HINT = {
   invalid_date: "تاریخ وارد شده معتبر نیست.",
   forbidden: "این کار فقط برای مدیر مجاز است.",
 };
-const rejectReason = (op) => REJECT_HINT[op.code] || op.reason || "خطای ناشناخته از سرور";
+// توضیح کوتاه برای کاربر؛ اگر پیام سرور متفاوت باشد، همراه آن هم نشان داده می‌شود (برای پشتیبانی)
+const rejectReason = (op) => {
+  const hint = REJECT_HINT[op.code];
+  if (!hint) return op.reason || "خطای ناشناخته از سرور";
+  return op.reason && op.reason !== hint ? `${hint} (${op.reason})` : hint;
+};
 
 // سفارشی که مشتری‌اش ردشده، به آن مشتری وابسته است و با تلاش مجدد هم پذیرفته نمی‌شود
 function dependencyNote(op, rejected) {
