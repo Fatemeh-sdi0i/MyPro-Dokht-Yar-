@@ -262,9 +262,11 @@ async function submitLogin(e) {
   const d = new FormData(e.target);
   $("#loginError").textContent = "";
   try {
+    // خروج‌های ناتمام قبلی باید با نشست قدیمی کامل شوند، پیش از اینکه ورود، کوکی را عوض کند
+    await Sync.finishPendingLogouts().catch(() => {});
     const session = await Api.login(String(d.get("email")).trim(), String(d.get("password")));
     currentRole = session.user?.role || null;
-    await Sync.setScope(session.user?.id);
+    await Sync.beginSession(session.user?.id);
     await loadRemote();
     hideGate();
     renderAll();
@@ -275,11 +277,20 @@ async function submitLogin(e) {
   }
 }
 
+// خروج در صف همان کاربر ثبت می‌شود و بعد از همه‌ی تغییرات او ارسال می‌شود.
+// بدون اینترنت، خروج هنگام اتصال بعدی (حتی بدون ورود مجدد) کامل می‌شود.
 async function logout() {
+  const uid = Sync.currentUser();
+  if (!uid) {
+    try { await Api.logout(); } catch (err) { /* بدون نشست شناخته‌شده */ }
+    location.reload();
+    return;
+  }
   const pending = await Sync.pendingCount();
-  if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز ارسال نشده است. این تغییرات روی این دستگاه می‌مانند و با ورود دوباره‌ی همین کاربر ارسال می‌شوند. ادامه می‌دهید؟`)) return;
-  try { await Api.logout(); } catch (err) { /* اتصال نیست؛ نشست محلی پاک می‌شود */ }
-  await Sync.clearScope();
+  if (pending && !confirm(`${toFaDigits(pending)} تغییر هنوز ارسال نشده است. این تغییرات روی این دستگاه می‌مانند و به محض اتصال ارسال می‌شوند؛ سپس خروج ثبت می‌شود. ادامه می‌دهید؟`)) return;
+  await Sync.requestLogout();
+  const r = await Sync.flush();
+  await Sync.settleLogout(uid, r);
   location.reload();
 }
 
@@ -1026,15 +1037,24 @@ async function boot() {
   state.staff = [];
   state.transactions = [];
   renderAll();
+  // خروج‌های ناتمام را قبل از خواندن نشست کامل کن (با همان نشست قدیمی)
+  await Sync.finishPendingLogouts().catch(() => {});
   let online = true;
   try {
     const me = await Api.me();
     currentRole = me.user?.role || null;
-    await Sync.setScope(me.user?.id);
+    if (await Sync.hasPendingLogout(me.user?.id)) {
+      // خروج قبلی هنوز ثبت نشده: کاربر را دوباره وارد نمی‌کنیم
+      showGate();
+      renderAll();
+      toast("خروج قبلی هنوز روی سرور ثبت نشده؛ با اتصال دوباره تلاش می‌شود.");
+      return;
+    }
+    await Sync.beginSession(me.user?.id);
   } catch (err) {
     if (!Sync.isNetworkError(err)) {
       // نشست پایان یافته: نشانه‌ی کاربر پاک می‌شود، داده‌ی صف حذف نمی‌شود
-      await Sync.clearScope();
+      await Sync.endSession();
       showGate();
       renderAll();
       return;
@@ -1048,7 +1068,7 @@ async function boot() {
       toast("برای ورود به اینترنت نیاز است.");
       return;
     }
-    await Sync.setScope(last);
+    Sync.restoreScope(last);
   }
   try {
     await loadRemote();
@@ -1090,6 +1110,8 @@ function bindConnectionStatus() {
   window.addEventListener("offline", show);
   window.addEventListener("online", () => {
     toast("اتصال برقرار شد.");
+    // خروج ناتمام کاربری که از صفحه‌ی ورود خارج شده هم اینجا کامل می‌شود
+    Sync.finishPendingLogouts().catch(() => {});
     syncNow();
   });
   if (!navigator.onLine) show();
