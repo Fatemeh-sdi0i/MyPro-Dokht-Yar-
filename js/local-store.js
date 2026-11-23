@@ -29,6 +29,7 @@
   let onError = () => {};
   let keyCache = null;
   let memoryKeyRecord = null; // جایگزین وقتی IndexedDB نیست (آزمون‌ها و محیط‌های بدون IndexedDB)
+  let failVault = false; // فقط آزمون: شبیه‌سازی خطای IndexedDB
   let chain = Promise.resolve();
   let status = freshStatus();
 
@@ -56,18 +57,25 @@
   }
 
   /* ---------- کلید ---------- */
+  // خطای باز شدن IndexedDB «کلید گم شده» نیست: کلید ممکن است سالم باشد. پس خطا را گزارش می‌کنیم
+  // و هرگز آن را به‌عنوان نبود کلید تفسیر نمی‌کنیم (وگرنه دکمه‌ی حذف داده‌ی سالم دیده می‌شد).
   function openVaultDb() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      if (failVault) return reject(lockError("vault_unavailable"));
       if (!root.indexedDB) return resolve(null);
       let req;
-      try { req = root.indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { return resolve(null); }
+      try { req = root.indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { return reject(lockError("vault_unavailable")); }
+      let blocked = false;
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys", { keyPath: "id" });
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        if (blocked) { req.result.close(); return; } // پاسخ دیرهنگام: اتصال باز نمی‌ماند
+        resolve(req.result);
+      };
+      req.onerror = () => reject(lockError("vault_unavailable"));
+      req.onblocked = () => { blocked = true; reject(lockError("vault_unavailable")); };
     });
   }
 
@@ -272,6 +280,7 @@
       await open(v3);
       throw new Error("این داده قابل‌خواندن است و حذف نمی‌شود");
     } catch (err) {
+      if (err.code === "vault_unavailable") throw new Error("دسترسی به کلید مرورگر برقرار نیست؛ هیچ‌چیز حذف نشد");
       if (!UNREADABLE.includes(err.code)) throw err;
     }
     storage.removeItem(V3_KEY);
@@ -282,8 +291,9 @@
   // فقط برای آزمون‌ها: پاک کردن کلید حافظه‌ای و کش، و شبیه‌سازی از دست رفتن کلید
   const testing = {
     dropKey() { memoryKeyRecord = null; keyCache = null; },
+    setVaultFailure(on) { failVault = Boolean(on); keyCache = null; },
     // شبیه‌سازی بارگذاری مجدد صفحه: کلید (که در IndexedDB است) می‌ماند، کش و صف نوشتن پاک می‌شود
-    reset() { keyCache = null; chain = Promise.resolve(); status = freshStatus(); },
+    reset() { keyCache = null; failVault = false; chain = Promise.resolve(); status = freshStatus(); },
   };
 
   root.LocalStore = {

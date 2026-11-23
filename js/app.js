@@ -1170,10 +1170,13 @@ const LOCK_REASON = {
   key_missing: "کلید رمزنگاری این مرورگر پیدا نشد.",
   decrypt_failed: "داده‌ی رمزشده با کلید این مرورگر باز نمی‌شود.",
   corrupt: "ساختار داده‌ی ذخیره‌شده خراب است.",
+  vault_unavailable: "مرورگر در این لحظه به کلید رمزنگاری دسترسی ندارد. صفحه را دوباره باز کنید؛ هیچ داده‌ای حذف نشده است.",
 };
 
 function showLocalLock(st) {
   $("#localLockReason").textContent = LOCK_REASON[st.reason] || "داده‌ی ذخیره‌شده قابل خواندن نیست.";
+  // خطای موقت دسترسی به کلید، حذف را پیشنهاد نمی‌کند
+  $("#localDeleteBtn").hidden = st.reason === "vault_unavailable";
   $("#localLock").hidden = false;
   $("#localDeleteBtn").addEventListener("click", deleteLocalUnreadable);
 }

@@ -234,3 +234,44 @@ test('قبل از راه‌اندازی نوشتن انجام نمی‌شود', 
   assert.equal(LS.save({ customers: [] }), false);
   assert.equal(LS.isReady(), false);
 });
+
+test('خطای IndexedDB هنگام راه‌اندازی: قفل با دلیل vault_unavailable، پاکت دست‌نخورده و بدون امکان حذف', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'سالم-نجات', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  const sealed = storage.map.get(V3_KEY);
+
+  LS.testing.reset();
+  LS.testing.setVaultFailure(true);
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'vault_unavailable', 'خطای دسترسی کلید «کلید گم شده» نیست');
+  assert.equal(storage.map.get(V3_KEY), sealed, 'پاکت سالم دست‌نخورده است');
+  await assert.rejects(() => LS.deleteUnreadable(), /هیچ‌چیز حذف نشد/);
+  assert.equal(storage.map.get(V3_KEY), sealed, 'حذف در خطای موقت انجام نشد');
+
+  // بعد از برگشت دسترسی، داده همان است که بود
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.st.locked, false);
+  assert.equal(again.target.customers[0].name, 'سالم-نجات');
+});
+
+test('خطای IndexedDB هنگام نوشتن: هیچ پاکتی بدون کلید پایدار نوشته نمی‌شود و بعد از برگشت دسترسی ذخیره می‌شود', async () => {
+  const storage = fakeStorage();
+  let errors = 0;
+  await LS.init({ storage, target: {}, seed, onError: () => { errors += 1; } });
+  LS.testing.setVaultFailure(true);
+  const state = seed();
+  state.customers = [{ name: 'در-زمان-خطا', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  assert.equal(errors, 1, 'خطا گزارش شد');
+  assert.equal(storage.map.get(V3_KEY), undefined, 'بدون کلید پایدار، پاکت با کلید موقت نوشته نمی‌شود');
+
+  LS.testing.setVaultFailure(false);
+  LS.save(state); await LS.flush();
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'در-زمان-خطا');
+});

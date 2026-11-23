@@ -23,27 +23,37 @@
   const LOCKED_MSG = "داده‌های همگام‌نشده‌ی این مرورگر قابل خواندن نیستند؛ هیچ‌چیزی حذف نشده است.";
   const TRANSIENT_4XX = new Set([408, 425, 429]);
   let dbPromise = null;
+  let failVault = false; // فقط آزمون
   let scope = null; // شناسه‌ی کاربر فعلی
   let lastTs = 0;
   let lastN = 0;
 
+  // خطای IndexedDB هرگز به معنای «نبود داده یا کلید» گرفته نمی‌شود: پیش از این null برمی‌گشت و
+  // داده‌ی سالم ناخوانا علامت می‌خورد. حالا خطای vault_unavailable است؛ جواب خطا کش نمی‌شود تا تلاش بعدی دوباره باز کند.
   function openDb() {
     if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve) => {
+    const p = new Promise((resolve, reject) => {
+      if (failVault) return reject(localError("vault_unavailable"));
       if (!root.indexedDB) return resolve(null);
       let req;
-      try { req = root.indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { return resolve(null); }
+      try { req = root.indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { return reject(localError("vault_unavailable")); }
+      let blocked = false;
       req.onupgradeneeded = () => {
         const db = req.result;
         for (const name of Object.keys(KEY_OF)) {
           if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: KEY_OF[name] });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        if (blocked) { req.result.close(); return; }
+        resolve(req.result);
+      };
+      req.onerror = () => reject(localError("vault_unavailable"));
+      req.onblocked = () => { blocked = true; reject(localError("vault_unavailable")); };
     });
-    return dbPromise;
+    dbPromise = p;
+    p.catch(() => { if (dbPromise === p) dbPromise = null; });
+    return p;
   }
 
   // نتیجه: {value} یا null اگر IndexedDB در دسترس نباشد (آنگاه حافظه‌ی صفحه استفاده می‌شود)
@@ -238,7 +248,7 @@
       for (const r of await all(name)) {
         if (!r.unreadable) continue;
         unreadable += 1;
-        if (r.scope === scope) unreadableMine += 1;
+        if (r.scope === scope && r.unreadableCode !== "vault_unavailable") unreadableMine += 1;
       }
     }
     return { encrypted: Boolean(subtle()), unreadable, unreadableMine };
@@ -254,7 +264,7 @@
     let removed = 0;
     for (const name of ["queue", "rejected"]) {
       for (const rec of await all(name)) {
-        if (rec.unreadable && rec.scope === scope) {
+        if (rec.unreadable && rec.scope === scope && rec.unreadableCode !== "vault_unavailable") {
           await del(name, rec.opId);
           removed += 1;
         }
@@ -263,7 +273,7 @@
     for (const rec of await all("cache")) {
       const mine = rec.key === "snapshot:" + scope || rec.key === "logout:" + scope;
       const marker = rec.key === "last";
-      if (rec.unreadable && (mine || marker)) {
+      if (rec.unreadable && rec.unreadableCode !== "vault_unavailable" && (mine || marker)) {
         await del("cache", rec.key);
         removed += 1;
       }
@@ -637,6 +647,8 @@
       deviceKeyCache = null;
     },
     clearDeviceKeyCache: () => { deviceKeyCache = null; },
+    // شبیه‌سازی خطای IndexedDB: باز شدن انبار شکست می‌خورد (نه اینکه کلید نباشد)
+    setVaultFailure: (on) => { failVault = Boolean(on); dbPromise = null; deviceKeyCache = null; },
     // فقط حافظه‌ی داخلی (آزمون‌های Node): همه‌ی فروشگاه‌ها و کلید پاک می‌شوند
     resetAll: () => {
       for (const name of Object.keys(memory)) memory[name].clear();
