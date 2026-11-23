@@ -164,6 +164,10 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:offline
 
+      - name: Run PWA browser test (service worker, app-shell cache, offline reload)
+        working-directory: tests/e2e
+        run: npm run test:pwa
+
       - name: Run offline sync test against real server and PostgreSQL
         working-directory: tests/e2e
         run: npm run test:offline-server
