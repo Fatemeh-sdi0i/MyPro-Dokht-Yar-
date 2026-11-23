@@ -331,3 +331,18 @@ test('تلاش مجدد پس از بررسی: نسخه‌ی تازه جایگز�
   assert.equal(queued.body.to, 'progress', 'وضعیت مقصد تغییر نمی‌کند');
   assert.equal(await Sync.rejectedOp(rec.opId), null);
 });
+
+test('خروج ارسال شده اما ثبتش تسویه نشده (صفحه پیش از تسویه بسته شد): تسویه‌ی بعدی آن را پاک می‌کند', async () => {
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  await Sync.requestLogout();
+  responder = null;
+  const r = await Sync.flush(); // خروج ارسال می‌شود؛ settleLogout اجرا نمی‌شود
+  assert.equal(r.loggedOut, true);
+  assert.equal(await Sync.pendingCount(), 0);
+  assert.equal(await Sync.hasPendingLogout(u), true, 'ثبت هنوز مانده است');
+  const done = await Sync.finishPendingLogouts();
+  assert.equal(done.find((d) => d.userId === u).finished, true);
+  assert.equal(await Sync.hasPendingLogout(u), false);
+});

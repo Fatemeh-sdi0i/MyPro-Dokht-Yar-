@@ -303,7 +303,9 @@
    * کش نمایشی همان کاربر همیشه حذف می‌شود؛ صف و فهرست ردشده (داده‌ی ارسال‌نشده) حفظ می‌شوند.
    */
   async function settleLogout(userId, result) {
-    const finished = Boolean(result && (result.loggedOut || result.auth));
+    // ثبت خروج بدون عملیات خروج در صف یعنی خروج قبلاً ارسال شده و تسویه‌اش کامل نشده است
+    const stillQueued = (await all("queue")).some((o) => o.scope === userId && o.path === LOGOUT_PATH);
+    const finished = Boolean((result && (result.loggedOut || result.auth)) || !stillQueued);
     if (finished) {
       for (const op of (await all("queue")).filter((o) => o.scope === userId && o.path === LOGOUT_PATH)) {
         await del("queue", op.opId);
