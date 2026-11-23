@@ -32,6 +32,9 @@
   </aside>
 
   <main class="main">
+    <div class="session-banner" id="sessionBanner" role="alert" hidden>
+      <strong>هشدار ذخیره‌سازی:</strong> <span id="sessionBannerText"></span>
+    </div>
     <header class="topbar">
       <div class="mobile-brand">دوخت‌یار</div>
       <div class="top-actions"><button class="round-btn" title="اعلان‌ها">♧<i></i></button><button class="round-btn" title="تقویم">▦</button></div>
@@ -163,6 +166,15 @@
         <section class="panel">
           <h2 class="panel-title">داده‌ها</h2>
           <p class="muted">داده‌ها فقط در همین مرورگر ذخیره می‌شوند. برای پشتیبان‌گیری فایل JSON دانلود کنید.</p>
+          <div class="recovery-panel" id="recoveryPanel" hidden>
+            <h3>بازیابی داده</h3>
+            <p id="recoveryText"></p>
+            <p class="muted" id="recoveryCounts" style="white-space:pre-line"></p>
+            <div class="settings-actions">
+              <button class="secondary-btn" id="recoveryImport" type="button" hidden>بررسی و جایگزینی با نسخه‌ی قدیمی…</button>
+              <button class="secondary-btn" id="recoveryUndo" type="button" hidden>جابه‌جایی با پشتیبان…</button>
+            </div>
+          </div>
           <div class="settings-actions">
             <button class="secondary-btn" id="exportBtn" type="button">دانلود پشتیبان (JSON)</button>
             <button class="secondary-btn" id="logoutBtn" type="button" hidden>خروج از حساب</button>

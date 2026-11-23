@@ -67,9 +67,14 @@ async function waitFor(fn, label, timeout = 10000) {
 
 // هر سناریو کانتکست جداگانه (localStorage و IndexedDB جدا) دارد.
 // seedV2: داده‌ی ساده‌ی قدیمی قبل از بارگذاری برنامه؛ failV3: نوشتن dokhtyar.v3 همیشه شکست می‌خورد.
-async function openApp({ seedV2, failV3 = false, dialogs = [] } = {}) {
+async function openApp({ seedV2, failV3 = false, noIndexedDb = false, dialogs = [] } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "allow" });
   contexts.push(ctx);
+  if (noIndexedDb) {
+    await ctx.addInitScript(() => {
+      Object.defineProperty(window, "indexedDB", { get: () => undefined, configurable: true });
+    });
+  }
   if (failV3) {
     await ctx.addInitScript(() => {
       const orig = Storage.prototype.setItem;
@@ -258,4 +263,65 @@ test('پشتیبان JSON همچنان دانلود می‌شود و مشتری�
   const file = await download.path();
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.ok(data.customers.some((c) => c.name === "پشتیبان-آزمون"), 'مشتری در پشتیبان است');
+});
+
+test('بدون IndexedDB: هشدار حالت فقط‌نشست، هیچ پاکتی یا نسخه‌ی ساده‌ای نوشته نمی‌شود، و خروج با هشدار همراه است', async () => {
+  const { page, plan, unexpected } = await openApp({ noIndexedDb: true });
+  await waitFor(() => page.evaluate(() => !document.querySelector("#sessionBanner").hidden), "نمایش هشدار");
+  await addCustomer(page, 'فقط-موقت');
+  assert.equal(await raw(page, V3), null, 'پاکت رمزشده نوشته نشده');
+  assert.equal(await raw(page, V2), null, 'نسخه‌ی ساده‌ای ساخته نشده');
+  assert.equal(await page.evaluate(() => LocalStore.getStatus().sessionDirty), true);
+
+  // تغییر ذخیره‌نشده: مرورگر پیش از بارگذاری مجدد تأیید می‌خواهد
+  plan.push({ ok: true });
+  await page.reload();
+  await waitFor(() => page.evaluate(() => !document.querySelector("#sessionBanner").hidden), "هشدار بعد از بارگذاری");
+  await showCustomers(page);
+  assert.equal(await page.evaluate(() => document.querySelector("#customersBody").textContent.includes("فقط-موقت")), false, 'داده‌ی فقط‌نشست بعد از بارگذاری نمی‌ماند (و این باید هشدار شده باشد)');
+  assert.deepEqual(unexpected, [], 'هشدار خروج تنها پرسش مجاز بود');
+});
+
+// وضعیت واقعی: داده‌ی جدید رمزشده است و یک زبانه‌ی قدیمی نسخه‌ی ساده‌ی تازه‌ای نوشته است
+async function staleTab(page) {
+  await addCustomer(page, 'جدید-رمزشده');
+  await waitFor(async () => (await raw(page, V3)) !== null, "پاکت v3");
+  await page.evaluate((json) => localStorage.setItem("dokhtyar.v2", json), legacy(['قدیمی-از-زبانه']));
+  await page.reload();
+  await page.click('.nav-item[data-page="settings"]');
+  await waitFor(() => page.evaluate(() => !document.querySelector("#recoveryPanel").hidden), "نمایش پنل بازیابی");
+}
+
+test('بازیابی: نسخه‌ی قدیمی پس از تأیید وارد می‌شود، داده‌ی جدید در پشتیبان رمزشده می‌ماند و جابه‌جایی برمی‌گرداند', async () => {
+  const { page, plan, unexpected } = await openApp();
+  await staleTab(page);
+  assert.match(await page.textContent("#recoveryCounts"), /مشتری 1/);
+
+  plan.push({ ok: true }, { text: 'ورود' });
+  await page.click("#recoveryImport");
+  await waitFor(async () => (await raw(page, V2)) === null, "حذف نسخه‌ی ساده بعد از تأیید");
+  const backup = await raw(page, "dokhtyar.backup.v3");
+  assert.ok(backup, 'پشتیبان داده‌ی جدید وجود دارد');
+  assert.equal(backup.includes('جدید-رمزشده'), false, 'پشتیبان رمزشده است');
+  await showCustomers(page);
+  await waitFor(() => page.evaluate(() => document.querySelector("#customersBody").textContent.includes("قدیمی-از-زبانه")), "نمایش داده‌ی قدیمی بعد از بازیابی");
+
+  plan.push({ ok: true });
+  await page.click('.nav-item[data-page="settings"]');
+  await page.click("#recoveryUndo");
+  await waitFor(() => page.evaluate(() => document.querySelector("#customersBody").textContent.includes("جدید-رمزشده")), "برگشت به داده‌ی جدید");
+  assert.equal(await raw(page, "dokhtyar.backup.v3") !== null, true, 'هیچ پشتیبانی حذف نشد');
+  assert.deepEqual(unexpected, []);
+});
+
+test('بازیابی لغو‌شده: بدون تأیید دوم هیچ‌چیز تغییر نمی‌کند', async () => {
+  const { page, plan } = await openApp();
+  await staleTab(page);
+  const v3 = await raw(page, V3), v2 = await raw(page, V2);
+  plan.push({ ok: true }, { text: 'نه' });
+  await page.click("#recoveryImport");
+  await sleep(300);
+  assert.equal(await raw(page, V3), v3);
+  assert.equal(await raw(page, V2), v2, 'نسخه‌ی ساده مانده');
+  assert.equal(await raw(page, "dokhtyar.backup.v3"), null, 'پشتیبانی ساخته نشد');
 });

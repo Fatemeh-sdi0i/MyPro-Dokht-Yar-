@@ -17,6 +17,9 @@
   const DB_VERSION = 1;
   const KEY_ID = "local";
   const AAD = "dokhtyar.local.v3";
+  const BACKUP_KEY = "dokhtyar.backup.v3"; // نسخه‌ی رمزشده‌ی داده‌ی جایگزین‌شده (هیچ‌وقت خودکار حذف نمی‌شود)
+  const BACKUP_AAD = "dokhtyar.local.backup";
+  const VAULT_CODES = ["vault_unavailable", "no_vault"];
   const UNREADABLE = ["key_missing", "decrypt_failed", "corrupt"];
 
   const te = new TextEncoder();
@@ -30,11 +33,18 @@
   let keyCache = null;
   let memoryKeyRecord = null; // جایگزین وقتی IndexedDB نیست (آزمون‌ها و محیط‌های بدون IndexedDB)
   let failVault = false; // فقط آزمون: شبیه‌سازی خطای IndexedDB
+  // idb: IndexedDB واقعی؛ none: مرورگر بدون IndexedDB (حالت فقط‌نشست)؛ memory: فقط آزمون‌های Node
+  const DEFAULT_VAULT_MODE = root.indexedDB ? "idb" : (typeof window === "undefined" ? "memory" : "none");
+  let vaultMode = DEFAULT_VAULT_MODE;
+  let busyOps = 0; // عملیات بازیابی در صف؛ تا پایان آن نوشتن معمولی پذیرفته نمی‌شود
   let chain = Promise.resolve();
   let status = freshStatus();
 
   function freshStatus() {
-    return { ready: false, locked: false, reason: null, staleLegacy: false, legacyCorrupt: false, migrationPending: false };
+    return {
+      ready: false, locked: false, reason: null, staleLegacy: false, legacyCorrupt: false, migrationPending: false,
+      persistent: true, sessionOnly: false, legacyKept: false, sessionDirty: false,
+    };
   }
 
   function lockError(code) {
@@ -62,7 +72,9 @@
   function openVaultDb() {
     return new Promise((resolve, reject) => {
       if (failVault) return reject(lockError("vault_unavailable"));
-      if (!root.indexedDB) return resolve(null);
+      if (vaultMode === "none") return reject(lockError("no_vault"));
+      if (vaultMode === "memory") return resolve(null);
+      if (!root.indexedDB) return reject(lockError("vault_unavailable"));
       let req;
       try { req = root.indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { return reject(lockError("vault_unavailable")); }
       let blocked = false;
@@ -124,22 +136,21 @@
   }
 
   /* ---------- رمز ---------- */
-  async function seal(text) {
-    const allowCreate = storage.getItem(V3_KEY) === null;
+  async function seal(text, aad = AAD, allowCreate = storage.getItem(V3_KEY) === null) {
     const key = await getKey(allowCreate);
     const iv = root.crypto.getRandomValues(new Uint8Array(12));
-    const ct = await subtle().encrypt({ name: "AES-GCM", iv, additionalData: te.encode(AAD) }, key, te.encode(text));
+    const ct = await subtle().encrypt({ name: "AES-GCM", iv, additionalData: te.encode(aad) }, key, te.encode(text));
     return JSON.stringify({ v: 3, iv: toB64(iv), ct: toB64(new Uint8Array(ct)) });
   }
 
-  async function open(envText) {
+  async function open(envText, aad = AAD) {
     let env;
     try { env = JSON.parse(envText); } catch (e) { throw lockError("corrupt"); }
     if (!env || env.v !== 3 || typeof env.iv !== "string" || typeof env.ct !== "string") throw lockError("corrupt");
     const key = await getKey(false);
     let pt;
     try {
-      pt = await subtle().decrypt({ name: "AES-GCM", iv: fromB64(env.iv), additionalData: te.encode(AAD) }, key, fromB64(env.ct));
+      pt = await subtle().decrypt({ name: "AES-GCM", iv: fromB64(env.iv), additionalData: te.encode(aad) }, key, fromB64(env.ct));
     } catch (e) {
       throw lockError("decrypt_failed");
     }
@@ -185,6 +196,7 @@
     onError = opts.onError || (() => {});
     keyCache = null;
     status = freshStatus();
+    if (vaultMode === "none") return initSessionOnly();
 
     const v3 = storage.getItem(V3_KEY);
     const v2 = storage.getItem(V2_KEY);
@@ -247,6 +259,8 @@
   // ترتیب نوشتن‌ها حفظ می‌شود؛ هر نوشتن با بازخوانی رمزگشایی تأیید می‌شود
   function save(state) {
     if (!isReady()) return false;
+    if (busyOps > 0) return false; // بازیابی در صف است؛ نوشتن معمولی نباید بعد از آن داده‌ی قدیمی بنویسد
+    if (!status.persistent) { status.sessionDirty = true; return true; } // حالت فقط‌نشست: چیزی نوشته نمی‌شود
     const text = JSON.stringify(state);
     chain = chain
       .then(async () => {
@@ -257,6 +271,108 @@
       })
       .catch((err) => onError(err));
     return true;
+  }
+
+  /* ---------- حالت فقط‌نشست (بدون IndexedDB) ---------- */
+  // بدون IndexedDB کلید پایدار وجود ندارد، پس هیچ پاکتی نوشته نمی‌شود و داده فقط تا بستن صفحه می‌ماند.
+  // نسخه‌ی ساده‌ی قدیمی (v2) فقط خوانده می‌شود و دست‌نخورده می‌ماند.
+  function initSessionOnly() {
+    if (storage.getItem(V3_KEY) !== null) return lock("no_vault"); // پاکت رمزشده هست ولی بدون IndexedDB باز نمی‌شود
+    const v2 = storage.getItem(V2_KEY);
+    const legacy = v2 !== null ? tryParse(v2) : null;
+    apply(legacy ? sanitize(legacy) : seedFn());
+    status = { ...freshStatus(), ready: true, persistent: false, sessionOnly: true, legacyKept: v2 !== null };
+    return status;
+  }
+
+  /* ---------- بازیابی داده‌ی نسخه‌ی قدیمی ---------- */
+  const count = (s) => ({
+    customers: s.customers.length, orders: s.orders.length, staff: s.staff.length, transactions: s.transactions.length,
+  });
+
+  // زنجیره‌ی نوشتن را دنبال می‌کند؛ تا پایان عملیات، نوشتن معمولی پذیرفته نمی‌شود
+  function enqueue(fn) {
+    busyOps += 1;
+    const run = chain.then(fn);
+    chain = run.catch(() => {}).then(() => { busyOps -= 1; });
+    return run;
+  }
+
+  // برای نمایش در پنل بازیابی: داده‌ی فعلی و داده‌ی نسخه‌ی قدیمی، هر دو با شمارش
+  function recoveryInfo() {
+    if (!status.ready || status.locked || !status.persistent || !target) return null;
+    const v2 = storage.getItem(V2_KEY);
+    const backupExists = storage.getItem(BACKUP_KEY) !== null;
+    if (v2 === null && !backupExists) return null;
+    const legacy = v2 !== null ? tryParse(v2) : null;
+    return {
+      legacyPresent: v2 !== null,
+      legacyCorrupt: v2 !== null && !legacy,
+      legacyCounts: legacy ? count(sanitize(legacy)) : null,
+      currentCounts: count(target),
+      backupExists,
+    };
+  }
+
+  // داده‌ی نسخه‌ی قدیمی را جایگزین داده‌ی فعلی می‌کند، اما اول داده‌ی فعلی را رمزشده در پشتیبان نگه می‌دارد.
+  // هیچ داده‌ای حذف نمی‌شود؛ اگر هر مرحله تأیید نشود، همه‌چیز به حالت قبل برمی‌گردد.
+  function importLegacy() {
+    return enqueue(async () => {
+      if (!status.ready || status.locked || !status.persistent) throw new Error("ورود داده‌ی قدیمی در این حالت ممکن نیست");
+      const v2 = storage.getItem(V2_KEY);
+      if (v2 === null) throw new Error("نسخه‌ی ساده‌ی قدیمی‌ای برای ورود وجود ندارد");
+      if (storage.getItem(BACKUP_KEY) !== null) throw new Error("یک پشتیبان قبلی هست؛ ابتدا آن را بررسی یا جابه‌جا کنید");
+      const legacy = tryParse(v2);
+      if (!legacy) throw new Error("نسخه‌ی ساده‌ی قدیمی خراب است؛ دست‌نخورده مانده است");
+      const clean = sanitize(legacy);
+      const expected = JSON.stringify(clean);
+      const v3Before = storage.getItem(V3_KEY);
+      if (v3Before === null) throw new Error("داده‌ی رمزشده‌ی فعلی وجود ندارد؛ بازیابی انجام نشد");
+      const currentText = await open(v3Before);
+      let backupWritten = false;
+      try {
+        storage.setItem(BACKUP_KEY, await seal(currentText, BACKUP_AAD, false));
+        backupWritten = true;
+        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== currentText) throw new Error("بازخوانی پشتیبان تأیید نشد");
+        storage.setItem(V3_KEY, await seal(expected));
+        if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
+      } catch (err) {
+        storage.setItem(V3_KEY, v3Before);
+        if (backupWritten) storage.removeItem(BACKUP_KEY);
+        throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
+      }
+      storage.removeItem(V2_KEY); // فقط بعد از تأیید هر دو نسخه
+      apply(clean);
+      status.staleLegacy = false;
+      return count(clean);
+    });
+  }
+
+  // جابه‌جایی داده‌ی اصلی و پشتیبان؛ هیچ‌چیز حذف نمی‌شود و تکرار آن برگشت است
+  function swapWithBackup() {
+    return enqueue(async () => {
+      if (!status.ready || status.locked || !status.persistent) throw new Error("جابه‌جایی در این حالت ممکن نیست");
+      const bak = storage.getItem(BACKUP_KEY);
+      if (bak === null) throw new Error("پشتیبانی برای جابه‌جایی وجود ندارد");
+      const curEnv = storage.getItem(V3_KEY);
+      const curText = await open(curEnv);
+      const bakText = await open(bak, BACKUP_AAD);
+      const restored = tryParse(bakText);
+      if (!restored) throw new Error("پشتیبان خراب است؛ هیچ‌چیز تغییر نکرد");
+      const clean = sanitize(restored);
+      try {
+        storage.setItem(V3_KEY, await seal(bakText));
+        storage.setItem(BACKUP_KEY, await seal(curText, BACKUP_AAD, false));
+        if ((await open(storage.getItem(V3_KEY))) !== bakText) throw new Error("بازخوانی تأیید نشد");
+        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== curText) throw new Error("بازخوانی تأیید نشد");
+      } catch (err) {
+        storage.setItem(V3_KEY, curEnv);
+        storage.setItem(BACKUP_KEY, bak);
+        throw new Error("جابه‌جایی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
+      }
+      apply(clean);
+      return count(clean);
+    });
   }
 
   // برای خواندن داده‌ی ساده در حالت سرور (انتقال یک‌باره) — بدون تغییر حالت
@@ -280,7 +396,7 @@
       await open(v3);
       throw new Error("این داده قابل‌خواندن است و حذف نمی‌شود");
     } catch (err) {
-      if (err.code === "vault_unavailable") throw new Error("دسترسی به کلید مرورگر برقرار نیست؛ هیچ‌چیز حذف نشد");
+      if (VAULT_CODES.includes(err.code)) throw new Error("دسترسی به کلید مرورگر برقرار نیست؛ هیچ‌چیز حذف نشد");
       if (!UNREADABLE.includes(err.code)) throw err;
     }
     storage.removeItem(V3_KEY);
@@ -292,12 +408,15 @@
   const testing = {
     dropKey() { memoryKeyRecord = null; keyCache = null; },
     setVaultFailure(on) { failVault = Boolean(on); keyCache = null; },
+    setVaultMode(mode) { vaultMode = mode; },
+    openAny: (env, aad) => open(env, aad), // فقط برای بررسی پشتیبان در آزمون‌ها
     // شبیه‌سازی بارگذاری مجدد صفحه: کلید (که در IndexedDB است) می‌ماند، کش و صف نوشتن پاک می‌شود
-    reset() { keyCache = null; failVault = false; chain = Promise.resolve(); status = freshStatus(); },
+    reset() { keyCache = null; failVault = false; vaultMode = DEFAULT_VAULT_MODE; busyOps = 0; chain = Promise.resolve(); status = freshStatus(); },
   };
 
   root.LocalStore = {
     init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain,
-    V2_KEY, V3_KEY, UNREADABLE, testing,
+    recoveryInfo, importLegacy, swapWithBackup,
+    V2_KEY, V3_KEY, BACKUP_KEY, UNREADABLE, testing,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1157,26 +1157,93 @@ async function bootLocal() {
     onError: () => toast(STORE_ERROR_MSG),
   });
   bindEvents();
+  // هشدار خروج: تغییری که در حالت فقط‌نشست مانده، با بستن صفحه از بین می‌رود
+  window.addEventListener("beforeunload", (e) => {
+    if (LocalStore.getStatus().sessionDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+  $("#recoveryImport").addEventListener("click", importLegacyData);
+  $("#recoveryUndo").addEventListener("click", undoRecovery);
   if (st.locked) {
     showLocalLock(st);
     return;
   }
+  renderSessionBanner(st.sessionOnly, LOCAL_SESSION_TEXT);
   if (st.migrationPending) toast("انتقال به حالت رمزشده کامل نشد؛ نسخه‌ی ساده‌ی قبلی دست‌نخورده مانده است.");
-  if (st.staleLegacy) toast("یک نسخه‌ی ساده‌ی قدیمی از داده روی این دستگاه مانده و دست‌نخورده است.");
+  if (st.staleLegacy) toast("یک نسخه‌ی ساده‌ی قدیمی از داده روی این دستگاه مانده و دست‌نخورده است. از بخش «بازیابی» در تنظیمات می‌توانید آن را بررسی کنید.");
+  if (st.legacyKept && st.sessionOnly) toast("نسخه‌ی ساده‌ی قدیمی روی این دستگاه دست‌نخورده مانده و در این مرورگر منتقل نشده است.");
   renderAll();
+  renderRecovery();
+}
+
+const LOCAL_SESSION_TEXT = "ذخیره‌ی دائمی در این مرورگر فعال نیست؛ داده فقط تا بستن این صفحه می‌ماند. پیش از خروج، پشتیبان JSON بگیرید.";
+const SERVER_SESSION_TEXT = "این مرورگر IndexedDB ندارد؛ تغییرات آفلاین فقط تا بستن این صفحه نگه داشته می‌شوند و پیش از خروج همگام نشده‌اند.";
+
+function renderSessionBanner(on, text) {
+  const banner = $("#sessionBanner");
+  banner.hidden = !on;
+  $("#sessionBannerText").textContent = text;
+}
+
+// بخش بازیابی: داده‌ی قدیمی مانده یا پشتیبان موجود است
+function renderRecovery() {
+  const panel = $("#recoveryPanel");
+  const info = LocalStore.recoveryInfo();
+  panel.hidden = !info;
+  if (!info) return;
+  const counts = (c) => (c ? `مشتری ${c.customers} · سفارش ${c.orders} · همکار ${c.staff} · تراکنش ${c.transactions}` : "—");
+  $("#recoveryText").textContent = info.legacyPresent
+    ? (info.legacyCorrupt
+      ? "یک نسخه‌ی ساده‌ی قدیمی خراب روی این دستگاه مانده و دست‌نخورده است."
+      : "یک نسخه‌ی ساده‌ی قدیمی از داده روی این دستگاه مانده است. ممکن است تغییراتی باشد که بعد از مهاجرت در یک زبانه‌ی قدیمی ثبت شده.")
+    : "یک پشتیبان از داده‌ی قبلی در این مرورگر نگه داشته شده است.";
+  $("#recoveryCounts").textContent = `داده‌ی فعلی: ${counts(info.currentCounts)}` + (info.legacyCounts ? `\nنسخه‌ی قدیمی: ${counts(info.legacyCounts)}` : "");
+  $("#recoveryImport").hidden = !info.legacyPresent || info.legacyCorrupt || info.backupExists;
+  $("#recoveryUndo").hidden = !info.backupExists;
+}
+
+async function importLegacyData() {
+  if (!confirm("داده‌ی فعلی با نسخه‌ی ساده‌ی قدیمی جایگزین می‌شود. داده‌ی فعلی پیش از آن، رمزشده در پشتیبان نگه داشته می‌شود و هیچ‌چیز حذف نمی‌شود. ادامه می‌دهید؟")) return;
+  if (prompt("برای تأیید، کلمه‌ی «ورود» را بنویسید:") !== "ورود") {
+    toast("بازیابی انجام نشد.");
+    return;
+  }
+  try {
+    const counts = await LocalStore.importLegacy();
+    renderAll();
+    toast(`داده‌ی قدیمی بازیابی شد (مشتری ${counts.customers}). داده‌ی قبلی در پشتیبان است.`);
+  } catch (err) {
+    toast(err.message);
+  }
+  renderRecovery();
+}
+
+async function undoRecovery() {
+  if (!confirm("داده‌ی فعلی و پشتیبان جابه‌جا می‌شوند. هیچ‌چیز حذف نمی‌شود. ادامه می‌دهید؟")) return;
+  try {
+    await LocalStore.swapWithBackup();
+    renderAll();
+    toast("جابه‌جایی انجام شد.");
+  } catch (err) {
+    toast(err.message);
+  }
+  renderRecovery();
 }
 
 const LOCK_REASON = {
   key_missing: "کلید رمزنگاری این مرورگر پیدا نشد.",
   decrypt_failed: "داده‌ی رمزشده با کلید این مرورگر باز نمی‌شود.",
   corrupt: "ساختار داده‌ی ذخیره‌شده خراب است.",
+  no_vault: "این مرورگر IndexedDB ندارد، پس داده‌ی رمزشده‌ی ذخیره‌شده را نمی‌توان باز کرد. با مرورگری که IndexedDB دارد باز کنید؛ هیچ‌چیز حذف نشده است.",
   vault_unavailable: "مرورگر در این لحظه به کلید رمزنگاری دسترسی ندارد. صفحه را دوباره باز کنید؛ هیچ داده‌ای حذف نشده است.",
 };
 
 function showLocalLock(st) {
   $("#localLockReason").textContent = LOCK_REASON[st.reason] || "داده‌ی ذخیره‌شده قابل خواندن نیست.";
   // خطای موقت دسترسی به کلید، حذف را پیشنهاد نمی‌کند
-  $("#localDeleteBtn").hidden = st.reason === "vault_unavailable";
+  $("#localDeleteBtn").hidden = st.reason === "vault_unavailable" || st.reason === "no_vault";
   $("#localLock").hidden = false;
   $("#localDeleteBtn").addEventListener("click", deleteLocalUnreadable);
 }
@@ -1204,6 +1271,7 @@ async function boot() {
   // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود.
   // مهاجرت ساده→رمزشده همین‌جا هم انجام می‌شود (بدون اعمال روی state).
   await LocalStore.init({ storage: localStorage, target: null, seed: cloneSeed, onError: () => {} }).catch(() => {});
+  if (!Sync.isPersistent()) renderSessionBanner(true, SERVER_SESSION_TEXT);
   legacyData = await LocalStore.readPlain().catch(() => null);
   state.orders = [];
   state.customers = [];
