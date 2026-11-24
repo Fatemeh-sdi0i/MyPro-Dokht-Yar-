@@ -52,17 +52,14 @@
       </div>
       <div class="dashboard-grid">
         <section class="panel performance">
-          <div class="panel-heading"><h2>↗ عملکرد ماهانه</h2><select><option>امسال</option><option>شش ماه اخیر</option></select></div>
+          <div class="panel-heading"><h2>↗ عملکرد ماهانه</h2><select id="monthlyRange" aria-label="بازه‌ی نمودار"><option value="year">امسال</option><option value="half">شش ماه اخیر</option></select></div>
           <div class="revenue-pill"><b>▥ <span id="revenueTotal">۰</span></b><small>درآمد تحویل‌شده (تومان)</small></div>
           <div class="chart">
             <div class="chart-lines"><i></i><i></i><i></i><i></i></div>
-            <svg viewBox="0 0 700 190" preserveAspectRatio="none" aria-label="نمودار عملکرد">
-              <defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f1d6bd" stop-opacity=".3"/><stop offset="1" stop-color="#f1d6bd" stop-opacity="0"/></linearGradient></defs>
-              <path d="M0 160 L70 160 L140 160 L210 130 L280 112 L350 92 L420 70 L490 47 L560 55 L630 32 L700 8 L700 190 L0 190Z" fill="url(#area)"/>
-              <polyline points="0,160 70,160 140,160 210,130 280,112 350,92 420,70 490,47 560,55 630,32 700,8" fill="none" stroke="#f4dfcc" stroke-width="3"/>
-              <g fill="#fff0df" stroke="#fff" stroke-width="2"><circle cx="0" cy="160" r="4"/><circle cx="70" cy="160" r="4"/><circle cx="140" cy="160" r="4"/><circle cx="210" cy="130" r="4"/><circle cx="280" cy="112" r="4"/><circle cx="350" cy="92" r="4"/><circle cx="420" cy="70" r="4"/><circle cx="490" cy="47" r="4"/><circle cx="560" cy="55" r="4"/><circle cx="630" cy="32" r="4"/><circle cx="700" cy="8" r="4"/></g>
-            </svg>
-            <div class="chart-labels"><span>فروردین</span><span>اردیبهشت</span><span>خرداد</span><span>تیر</span><span>مرداد</span><span>شهریور</span></div>
+            <svg id="monthlyChart" viewBox="0 0 700 190" preserveAspectRatio="none" role="img" aria-label="نمودار درآمد تحویل‌شده در ماه‌های شمسی"></svg>
+            <div class="chart-labels" id="monthlyLabels"></div>
+          </div>
+          <p class="muted" id="monthlyNote" hidden></p>
           </div>
         </section>
         <section class="panel new-order-panel">
@@ -207,6 +204,10 @@
               <button class="secondary-btn" id="backupCheckBtn" type="button">بررسی فایل</button>
             </div>
             <p id="backupMsg" aria-live="polite"></p>
+            <div class="settings-actions">
+              <button class="secondary-btn danger" id="backupRestoreBtn" type="button" hidden>بازگردانی از این فایل…</button>
+            </div>
+            <p class="muted" id="backupRestoreNote" hidden></p>
           </div>
         </section>
       </div>

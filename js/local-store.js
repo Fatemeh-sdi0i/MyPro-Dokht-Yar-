@@ -364,6 +364,47 @@
 
   // داده‌ی نسخه‌ی قدیمی را جایگزین داده‌ی فعلی می‌کند، اما اول داده‌ی فعلی را رمزشده در پشتیبان نگه می‌دارد.
   // هیچ داده‌ای حذف نمی‌شود؛ اگر هر مرحله تأیید نشود، همه‌چیز به حالت قبل برمی‌گردد.
+  /**
+   * جایگزینی داده‌ی فعلی با clean. ترتیب: داده‌ی فعلی رمزشده در پشتیبان ← نوشتن داده‌ی جدید ← بازخوانی هر دو.
+   * هر شکست: v3 به مقدار قبلی برمی‌گردد و پشتیبان فقط وقتی حذف می‌شود که برگشت v3 موفق بوده است.
+   * اگر برگشت هم شکست بخورد، پشتیبان (داده‌ی فعلی) نگه داشته می‌شود و پیام صریح است.
+   * فراخواننده باید پیش از این بررسی کند که پشتیبان قبلی نیست و وضعیت persistent و آماده است.
+   */
+  async function replaceWithBackup(clean) {
+    const expected = JSON.stringify(clean);
+    const v3Before = storage.getItem(V3_KEY);
+    const currentText = v3Before === null ? null : await open(v3Before);
+    let backupWritten = false;
+    try {
+      if (currentText !== null) {
+        storage.setItem(BACKUP_KEY, await seal(currentText, BACKUP_AAD, false));
+        backupWritten = true;
+        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== currentText) throw new Error("بازخوانی پشتیبان تأیید نشد");
+      }
+      storage.setItem(V3_KEY, await seal(expected));
+      if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
+    } catch (err) {
+      try {
+        if (v3Before === null) storage.removeItem(V3_KEY);
+        else storage.setItem(V3_KEY, v3Before);
+        if (backupWritten) storage.removeItem(BACKUP_KEY);
+      } catch (rbErr) {
+        throw new Error("بازیابی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در پشتیبان نگه داشته شده است و نباید حذف شود (" + err.message + ")");
+      }
+      throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
+    }
+  }
+
+  // دلیل مسدود بودن بازگردانی یا null اگر آماده است
+  function restoreBlockedReason() {
+    if (!status.ready || status.locked) return "پایگاه داده‌ی محلی آماده نیست؛ بازگردانی انجام نمی‌شود.";
+    if (!status.persistent) return "در این حالت داده ذخیره‌ی دائمی ندارد؛ بازگردانی انجام نمی‌شود.";
+    if (storage.getItem(BACKUP_KEY) !== null) {
+      return "یک پشتیبان محافظت‌شده از قبل در این مرورگر هست و حذف نمی‌شود، پس بازگردانی دوم انجام نمی‌شود.";
+    }
+    return null;
+  }
+
   function importLegacy() {
     return enqueue(async () => {
       if (!status.ready || status.locked || !status.persistent) throw new Error("ورود داده‌ی قدیمی در این حالت ممکن نیست");
@@ -372,31 +413,29 @@
       if (storage.getItem(BACKUP_KEY) !== null) throw new Error("یک پشتیبان قبلی هست؛ ابتدا آن را بررسی یا جابه‌جا کنید");
       const legacy = tryParse(v2);
       if (!legacy) throw new Error("نسخه‌ی ساده‌ی قدیمی خراب است؛ دست‌نخورده مانده است");
+      if (storage.getItem(V3_KEY) === null) throw new Error("داده‌ی رمزشده‌ی فعلی وجود ندارد؛ بازیابی انجام نشد");
       const clean = sanitize(legacy);
-      const expected = JSON.stringify(clean);
-      const v3Before = storage.getItem(V3_KEY);
-      if (v3Before === null) throw new Error("داده‌ی رمزشده‌ی فعلی وجود ندارد؛ بازیابی انجام نشد");
-      const currentText = await open(v3Before);
-      let backupWritten = false;
-      try {
-        storage.setItem(BACKUP_KEY, await seal(currentText, BACKUP_AAD, false));
-        backupWritten = true;
-        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== currentText) throw new Error("بازخوانی پشتیبان تأیید نشد");
-        storage.setItem(V3_KEY, await seal(expected));
-        if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
-      } catch (err) {
-        // پشتیبان (داده‌ی فعلی) فقط بعد از برگشت موفق v3 حذف می‌شود؛ اگر برگشت شکست بخورد، پشتیبان می‌ماند
-        try {
-          storage.setItem(V3_KEY, v3Before);
-          if (backupWritten) storage.removeItem(BACKUP_KEY);
-        } catch (rbErr) {
-          throw new Error("بازیابی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در پشتیبان نگه داشته شده است و نباید حذف شود (" + err.message + ")");
-        }
-        throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
-      }
+      await replaceWithBackup(clean);
       storage.removeItem(V2_KEY); // فقط بعد از تأیید هر دو نسخه
       apply(clean);
       status.staleLegacy = false;
+      lastError = null; lastSavedAt = Date.now();
+      return count(clean);
+    });
+  }
+
+  /**
+   * بازگردانی از فایل پشتیبان ساده یا رمزشده‌ای که فراخواننده خوانده و اعتبارسنجی کرده است.
+   * فقط وقتی پشتیبان محافظت‌شده نیست. داده‌ی فعلی به پشتیبان می‌رود و هیچ‌چیز حذف نمی‌شود.
+   */
+  function restoreBackup(parsedLocal) {
+    return enqueue(async () => {
+      const blocked = restoreBlockedReason();
+      if (blocked) throw new Error(blocked);
+      if (!parsedLocal || typeof parsedLocal !== "object") throw new Error("فایل پشتیبان نامعتبر است؛ چیزی تغییر نکرد");
+      const clean = sanitize(parsedLocal);
+      await replaceWithBackup(clean);
+      apply(clean);
       lastError = null; lastSavedAt = Date.now();
       return count(clean);
     });
@@ -492,7 +531,7 @@
 
   root.LocalStore = {
     init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
-    recoveryInfo, importLegacy, swapWithBackup, subscribe, getWriteStatus: writeStatus,
+    recoveryInfo, importLegacy, swapWithBackup, restoreBackup, restoreBlockedReason, subscribe, getWriteStatus: writeStatus,
     V2_KEY, V3_KEY, BACKUP_KEY, SWAP_KEY, UNREADABLE, testing,
   };
 })(typeof window !== "undefined" ? window : globalThis);

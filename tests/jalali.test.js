@@ -51,3 +51,17 @@ test('isoToJalaliString formats today correctly', () => {
   assert.equal(J.isoToJalaliString('2026-11-17'), '1405/08/26');
   assert.equal(J.isoToJalaliString('2026-03-21'), '1405/01/01');
 });
+
+test('اعتبارسنجی تقویمی: روزهای ناموجود ماه شمسی رد می‌شوند و خطا پرتاب نمی‌شود', () => {
+  // ماه‌های ۱ تا ۶ تا ۳۱ روز، ۷ تا ۱۱ تا ۳۰ روز
+  assert.notEqual(J.jalaliStringToISO('۱۴۰۵/۰۱/۳۱'), null, 'فروردین ۳۱ دارد');
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۰۷/۳۱'), null, 'مهر ۳۰ روز دارد');
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۰۸/۳۱'), null, 'آبان ۳۰ روز دارد');
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۱۲/۳۱'), null, 'اسفند هرگز ۳۱ روز ندارد');
+  assert.equal(J.jalaliStringToISO('۱۴۰۴/۱۲/۳۰'), null, '۱۴۰۴ کبیسه نیست؛ اسفند ۲۹ روز');
+  assert.notEqual(J.jalaliStringToISO('۱۴۰۳/۱۲/۳۰'), null, '۱۴۰۳ کبیسه است');
+  // ماه نامعتبر، بدون پرتاب خطا
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۱۳/۰۱'), null);
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۰۰/۰۱'), null);
+  assert.equal(J.jalaliStringToISO('۱۴۰۵/۰۸/۰۰'), null);
+});

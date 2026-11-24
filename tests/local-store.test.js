@@ -656,3 +656,60 @@ for (const failAll of [false, true]) {
     }
   });
 }
+
+// ---------- بازگردانی از فایل ----------
+const restoredObj = (name) => ({
+  orders: [], customers: [{ name, phone: '', note: '' }], staff: [], transactions: [],
+  settings: { shopName: 'بازگردانی', ownerName: '', phone: '', address: '', currency: 'تومان' },
+});
+
+test('بازگردانی: داده‌ی فعلی به پشتیبان می‌رود و داده‌ی فایل جایگزین می‌شود؛ بعد از بارگذاری مجدد هم درست است', async () => {
+  const { base, target } = await armedStart();
+  // armedStart یک نسخه‌ی ساده‌ی قدیمی دارد؛ برای این آزمون آن را حذف می‌کنیم تا فقط بازگردانی بررسی شود
+  base.map.delete(V2_KEY);
+  const counts = await LS.restoreBackup(restoredObj('از-فایل'));
+  assert.equal(counts.customers, 1);
+  assert.equal(target.customers[0].name, 'از-فایل');
+  assert.ok(base.map.get(BACKUP_KEY), 'داده‌ی فعلی در پشتیبان است');
+  LS.testing.reset();
+  const again = await startWith(base);
+  assert.equal(again.target.customers[0].name, 'از-فایل');
+});
+
+test('بازگردانی دوم وقتی پشتیبان هست: رد می‌شود و هیچ‌چیز تغییر نمی‌کند', async () => {
+  const { base, target } = await armedStart();
+  base.map.delete(V2_KEY);
+  await LS.restoreBackup(restoredObj('اول'));
+  const snap = base.map.get(V3_KEY);
+  const snapBak = base.map.get(BACKUP_KEY);
+  await assert.rejects(() => LS.restoreBackup(restoredObj('دوم')), /پشتیبان محافظت‌شده/);
+  assert.equal(base.map.get(V3_KEY), snap);
+  assert.equal(base.map.get(BACKUP_KEY), snapBak);
+  assert.equal(target.customers[0].name, 'اول');
+});
+
+test('بازگردانی در حالت فقط‌نشست یا قفل: رد می‌شود', async () => {
+  const storage = fakeStorage();
+  // بدون IndexedDB حالت persistent نیست
+  LS.testing.setVaultMode('none');
+  const r = await startWith(storage);
+  assert.equal(r.st.persistent, false);
+  await assert.rejects(() => LS.restoreBackup(restoredObj('x')), /ذخیره‌ی دائمی/);
+});
+
+for (const failAll of [false, true]) {
+  test(`بازگردانی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'یک نوشتن شکست می‌خورد'}): هیچ‌کدام از دو داده گم نمی‌شود`, async () => {
+    for (let failAt = 1; failAt <= 5; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      base.map.delete(V2_KEY);
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      try { await LS.restoreBackup(restoredObj('از-فایل')); } catch (e) { /* مجاز */ }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      // یا بازگردانی کامل شده، یا داده‌ی فعلی همچنان در انبار اصلی است
+      const restored = await recoverable(base.map, 'از-فایل');
+      const kept = await recoverable(base.map, 'جدید-آزمون');
+      assert.ok(restored || kept, `نقطه‌ی شکست ${failAt}`);
+    }
+  });
+}

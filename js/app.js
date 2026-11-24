@@ -434,7 +434,49 @@ function deliveredRevenue() {
   return state.orders.filter((o) => o.status === "delivered").reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 }
 
+// درآمد تحویل‌شده به تفکیک ماه شمسی تحویل (تاریخ تحویل). سفارش بدون تاریخ تحویل فقط در مجموع است.
+function monthlyRevenue(year) {
+  const byMonth = Array(13).fill(0);
+  for (const o of state.orders) {
+    if (o.status !== "delivered") continue;
+    const parts = toEnDigits(o.due || "").split("/");
+    if (parts.length !== 3 || parseInt(parts[0], 10) !== year) continue;
+    const m = parseInt(parts[1], 10);
+    if (m >= 1 && m <= 12) byMonth[m] += Number(o.price) || 0;
+  }
+  return byMonth;
+}
+
+function renderMonthlyChart() {
+  const year = parseInt(toEnDigits(TODAY_JALALI).split("/")[0], 10);
+  const currentMonth = parseInt(toEnDigits(TODAY_JALALI).split("/")[1], 10);
+  const all = monthlyRevenue(year);
+  const range = $("#monthlyRange").value === "half" ? Array.from({ length: 6 }, (_, i) => currentMonth - 5 + i).filter((m) => m >= 1) : Array.from({ length: 12 }, (_, i) => i + 1);
+  const values = range.map((m) => all[m]);
+  const max = Math.max(1, ...values);
+  const W = 700, H = 190, pad = 16;
+  const pts = values.map((v, i) => {
+    const x = range.length > 1 ? (i * W) / (range.length - 1) : W / 2;
+    const y = H - pad - (v / max) * (H - pad * 2);
+    return { x: x.toFixed(1), y: y.toFixed(1) };
+  });
+  const line = pts.map((p) => `${p.x},${p.y}`).join(" ");
+  const area = `M0 ${H} L${pts.map((p) => `${p.x} ${p.y}`).join(" L")} L${W} ${H}Z`;
+  $("#monthlyChart").innerHTML = `<defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f1d6bd" stop-opacity=".3"/><stop offset="1" stop-color="#f1d6bd" stop-opacity="0"/></linearGradient></defs>`
+    + `<path d="${area}" fill="url(#area)"/><polyline points="${line}" fill="none" stroke="#f4dfcc" stroke-width="3"/>`
+    + `<g fill="#fff0df" stroke="#fff" stroke-width="2">${pts.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="4"/>`).join("")}</g>`;
+  $("#monthlyLabels").innerHTML = range.map((m) => `<span>${esc(PERSIAN_MONTHS[m - 1])}</span>`).join("");
+  const total = values.reduce((a, b) => a + b, 0);
+  const undated = state.orders.some((o) => o.status === "delivered" && !(parseInt(toEnDigits(o.due || "").split("/")[0], 10) === year));
+  const note = $("#monthlyNote");
+  note.hidden = !(total === 0 || undated);
+  note.textContent = total === 0
+    ? "هنوز درآمدی با تاریخ تحویل در این بازه ثبت نشده است."
+    : "سفارش‌های تحویل‌شده‌ای که تاریخ تحویل ندارند یا در سال جاری نیستند، در نمودار نمی‌آیند؛ در مجموع درآمد هستند.";
+}
+
 function renderDashboard() {
+  renderMonthlyChart();
   $("#statDelivered").textContent = toFaDigits(countByStatus("delivered"));
   $("#statReady").textContent = toFaDigits(countByStatus("ready"));
   $("#statProgress").textContent = toFaDigits(countByStatus("progress"));
@@ -784,10 +826,25 @@ async function exportEncryptedData() {
   }
 }
 
+// آخرین فایلی که با موفقیت بررسی شده؛ بازگردانی فقط همین محتوای بررسی‌شده را استفاده می‌کند (دوباره خوانده نمی‌شود)
+let verifiedBackup = null;
+
+function renderRestoreControls() {
+  const btn = $("#backupRestoreBtn");
+  const note = $("#backupRestoreNote");
+  const blocked = !REMOTE && verifiedBackup && verifiedBackup.kind === "local" ? LocalStore.restoreBlockedReason() : null;
+  btn.hidden = REMOTE || !verifiedBackup || verifiedBackup.kind !== "local";
+  btn.disabled = Boolean(blocked);
+  note.textContent = blocked || "";
+  note.hidden = !blocked;
+}
+
 // بررسی فایل پشتیبان (ساده یا رمزشده). فقط می‌خواند؛ هیچ‌چیز در داده‌ی برنامه نوشته یا جایگزین نمی‌شود.
 async function checkBackupFile() {
   const input = $("#backupCheckFile");
   const file = input.files && input.files[0];
+  verifiedBackup = null;
+  renderRestoreControls();
   if (!file) return setBackupMsg("ابتدا فایل پشتیبان را انتخاب کنید.", true);
   if (file.size > 50 * 1024 * 1024) return setBackupMsg("فایل بیش از حد بزرگ است.", true);
   setBackupMsg("در حال بررسی…", false);
@@ -801,13 +858,39 @@ async function checkBackupFile() {
       r = { ...BackupCrypto.parseBackup(text), encrypted: false };
     }
     const c = r.counts;
+    const kindText = r.kind === "server"
+      ? "این فایل پشتیبان حالت سرور است و در حالت محلی بازگردانی نمی‌شود."
+      : "می‌توانید از همین فایل بازگردانی کنید.";
     setBackupMsg(
       `فایل ${r.encrypted ? "رمزشده" : "ساده"} معتبر است: ${c.customers} مشتری، ${c.orders} سفارش، ${c.staff} همکار، ${c.transactions} تراکنش. ` +
-      "هیچ داده‌ای تغییر نکرد. بازگردانی از فایل در این نسخه وجود ندارد.",
+      `هیچ داده‌ای تغییر نکرد. ${kindText}`,
       false,
     );
+    verifiedBackup = { kind: r.kind, data: r.data, counts: c };
+    renderRestoreControls();
   } catch (err) {
     setBackupMsg(backupErrorText(err), true);
+  }
+}
+
+// بازگردانی از فایلی که همین حالا بررسی شده. داده‌ی فعلی پیش از آن در پشتیبان محافظت‌شده می‌ماند.
+async function restoreVerifiedBackup() {
+  if (!verifiedBackup || verifiedBackup.kind !== "local") return;
+  const blocked = LocalStore.restoreBlockedReason();
+  if (blocked) return setBackupMsg(blocked, true);
+  const c = verifiedBackup.counts;
+  if (!confirm(`داده‌ی فعلی با این فایل جایگزین می‌شود (مشتری ${c.customers}، سفارش ${c.orders}). داده‌ی فعلی در پشتیبان محافظت‌شده نگه داشته می‌شود و هیچ‌چیز حذف نمی‌شود. ادامه می‌دهید؟`)) return;
+  if (prompt("برای تأیید، کلمه‌ی «بازگردانی» را بنویسید:") !== "بازگردانی") return setBackupMsg("بازگردانی انجام نشد؛ چیزی تغییر نکرد.", true);
+  try {
+    await LocalStore.restoreBackup(verifiedBackup.data);
+    verifiedBackup = null;
+    renderRestoreControls();
+    renderAll();
+    renderRecovery();
+    setBackupMsg("داده از فایل بازگردانی شد. داده‌ی قبلی در پشتیبان محافظت‌شده است.", false);
+  } catch (err) {
+    setBackupMsg(backupErrorText(err), true);
+    renderRestoreControls();
   }
 }
 
@@ -878,13 +961,22 @@ async function submitOrder(e) {
     return;
   }
 
+  // تاریخ تحویل محلی باید تاریخ شمسی معتبر باشد؛ خالی یعنی «تعیین نشده»
+  const dueRaw = String(d.get("due") || "").trim();
+  let dueText = "تعیین نشده";
+  if (dueRaw) {
+    const dueIso = Jalali.jalaliStringToISO(dueRaw);
+    if (!dueIso) { toast("تاریخ تحویل باید معتبر و به شکل ۱۴۰۵/۰۹/۲۰ باشد."); return; }
+    dueText = toFaDigits(Jalali.isoToJalaliString(dueIso));
+  }
+
   state.orders.unshift({
     id: nextOrderId(),
     customer: customerName,
     type,
     desc: description,
     created: TODAY_JALALI,
-    due: toFaDigits(String(d.get("due") || "").trim()) || "تعیین نشده",
+    due: dueText,
     status,
     price,
   });
@@ -961,9 +1053,18 @@ async function submitTransaction(e) {
     return;
   }
 
+  // تاریخ محلی تراکنش باید معتبر باشد؛ خالی یعنی امروز
+  const dateRaw = String(d.get("date") || "").trim();
+  let dateText = TODAY_JALALI;
+  if (dateRaw) {
+    const dayIso = Jalali.jalaliStringToISO(dateRaw);
+    if (!dayIso) { toast("تاریخ باید معتبر و به شکل ۱۴۰۵/۰۸/۱۶ باشد."); return; }
+    dateText = toFaDigits(Jalali.isoToJalaliString(dayIso));
+  }
+
   state.transactions.push({
     id: nextId(state.transactions),
-    date: toFaDigits(String(d.get("date") || "").trim()) || TODAY_JALALI,
+    date: dateText,
     kind: d.get("kind"),
     category: d.get("category"),
     amount,
@@ -1200,6 +1301,9 @@ function bindEvents() {
   $("#exportBtn").addEventListener("click", exportData);
   $("#exportEncryptedBtn").addEventListener("click", exportEncryptedData);
   $("#backupCheckBtn").addEventListener("click", checkBackupFile);
+  $("#backupRestoreBtn").addEventListener("click", restoreVerifiedBackup);
+  $("#monthlyRange").addEventListener("change", renderMonthlyChart);
+  $("#backupCheckFile").addEventListener("change", () => { verifiedBackup = null; renderRestoreControls(); });
   $("#resetBtn").addEventListener("click", resetData);
 
   $("#globalSearch").addEventListener("keydown", (e) => {

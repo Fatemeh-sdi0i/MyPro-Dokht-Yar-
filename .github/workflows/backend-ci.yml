@@ -184,6 +184,14 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:backup
 
+      - name: Run local restore browser test (plaintext and encrypted, protected backup)
+        working-directory: tests/e2e
+        run: npm run test:restore
+
+      - name: Run local date validation and monthly chart browser test
+        working-directory: tests/e2e
+        run: npm run test:dashboard
+
       - name: Run offline sync test against real server and PostgreSQL
         working-directory: tests/e2e
         run: npm run test:offline-server
