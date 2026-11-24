@@ -730,23 +730,85 @@ async function submitSettings(e) {
   toast("تنظیمات ذخیره شد.");
 }
 
-async function exportData() {
-  let payload;
-  if (REMOTE) {
-    try { payload = await Api.exportJson(); }
-    catch (err) { toast(err.message || "دانلود پشتیبان انجام نشد"); return; }
-  } else {
-    payload = state;
-  }
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+// همان داده‌ای که پشتیبان ساده می‌دهد، در هر دو حالت
+async function backupPayload() {
+  return REMOTE ? Api.exportJson() : state;
+}
+
+function downloadText(fileName, text) {
+  const blob = new Blob([text], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "dokhtyar-backup.json";
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// پشتیبان ساده (بدون تغییر در رفتار)
+async function exportData() {
+  let payload;
+  try { payload = await backupPayload(); }
+  catch (err) { toast(err.message || "دانلود پشتیبان انجام نشد"); return; }
+  downloadText("dokhtyar-backup.json", JSON.stringify(payload, null, 2));
+}
+
+function setBackupMsg(text, isError) {
+  const el = $("#backupMsg");
+  el.textContent = text;
+  el.dataset.state = isError ? "error" : "ok";
+}
+
+function backupErrorText(err) {
+  if (window.BackupCrypto && err instanceof BackupCrypto.BackupError) return err.message;
+  return "عملیات انجام نشد؛ هیچ داده‌ای تغییر نکرد.";
+}
+
+// پشتیبان رمزشده (اختیاری). گذرواژه فقط در حافظه‌ی همین صفحه است و ذخیره یا ارسال نمی‌شود.
+async function exportEncryptedData() {
+  const pw = $("#backupPassword").value;
+  const pw2 = $("#backupPassword2").value;
+  if (pw !== pw2) return setBackupMsg("گذرواژه و تکرار آن یکی نیستند.", true);
+  setBackupMsg("در حال رمزنگاری…", false);
+  try {
+    const payload = await backupPayload();
+    const text = await BackupCrypto.encryptBackup(JSON.stringify(payload, null, 2), pw);
+    downloadText("dokhtyar-backup-encrypted.json", text);
+    $("#backupPassword").value = "";
+    $("#backupPassword2").value = "";
+    setBackupMsg("فایل رمزشده دانلود شد. گذرواژه را جای امنی نگه دارید؛ بدون آن این فایل قابل بازیابی نیست.", false);
+  } catch (err) {
+    setBackupMsg(backupErrorText(err), true);
+  }
+}
+
+// بررسی فایل پشتیبان (ساده یا رمزشده). فقط می‌خواند؛ هیچ‌چیز در داده‌ی برنامه نوشته یا جایگزین نمی‌شود.
+async function checkBackupFile() {
+  const input = $("#backupCheckFile");
+  const file = input.files && input.files[0];
+  if (!file) return setBackupMsg("ابتدا فایل پشتیبان را انتخاب کنید.", true);
+  if (file.size > 50 * 1024 * 1024) return setBackupMsg("فایل بیش از حد بزرگ است.", true);
+  setBackupMsg("در حال بررسی…", false);
+  try {
+    const text = await file.text();
+    let r;
+    try {
+      r = { ...(await BackupCrypto.decryptBackup(text, $("#backupCheckPassword").value)), encrypted: true };
+    } catch (err) {
+      if (err.code !== "not_encrypted") throw err;
+      r = { ...BackupCrypto.parseBackup(text), encrypted: false };
+    }
+    const c = r.counts;
+    setBackupMsg(
+      `فایل ${r.encrypted ? "رمزشده" : "ساده"} معتبر است: ${c.customers} مشتری، ${c.orders} سفارش، ${c.staff} همکار، ${c.transactions} تراکنش. ` +
+      "هیچ داده‌ای تغییر نکرد. بازگردانی از فایل در این نسخه وجود ندارد.",
+      false,
+    );
+  } catch (err) {
+    setBackupMsg(backupErrorText(err), true);
+  }
 }
 
 function resetData() {
@@ -1136,6 +1198,8 @@ function bindEvents() {
   $("#txForm").addEventListener("submit", submitTransaction);
   $("#settingsForm").addEventListener("submit", submitSettings);
   $("#exportBtn").addEventListener("click", exportData);
+  $("#exportEncryptedBtn").addEventListener("click", exportEncryptedData);
+  $("#backupCheckBtn").addEventListener("click", checkBackupFile);
   $("#resetBtn").addEventListener("click", resetData);
 
   $("#globalSearch").addEventListener("keydown", (e) => {

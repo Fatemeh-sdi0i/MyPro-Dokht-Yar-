@@ -59,3 +59,12 @@
 .save-indicator{font-size:13px;color:#6b6b6b;margin-inline-start:auto;align-self:center;white-space:nowrap}
 .save-indicator[data-state="error"]{color:#9a3b3b;font-weight:600}
 .save-indicator[data-state="session"]{color:#7a5200}
+
+/* پشتیبان رمزشده (تنظیمات) */
+.backup-crypto { margin-top: 16px; }
+.backup-crypto h3 { margin: 14px 0 6px; }
+.backup-crypto .backup-field { display: block; margin: 8px 0; }
+.backup-crypto .backup-field input { display: block; width: 100%; max-width: 420px; margin-top: 4px; padding: 8px; box-sizing: border-box; }
+.backup-crypto .backup-warning { color: var(--danger, #b42318); }
+#backupMsg { min-height: 1.4em; }
+#backupMsg[data-state="error"] { color: var(--danger, #b42318); }

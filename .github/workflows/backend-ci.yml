@@ -48,7 +48,7 @@ jobs:
           node-version: 20
 
       - name: Run unit tests
-        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js
+        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js
 
   api:
     name: API tests (Fastify + PostgreSQL)
@@ -179,6 +179,10 @@ jobs:
       - name: Run server-mode unload warning browser test (no IndexedDB, queued changes)
         working-directory: tests/e2e
         run: npm run test:unload
+
+      - name: Run encrypted backup browser test (password, wrong password, corrupt file, no overwrite)
+        working-directory: tests/e2e
+        run: npm run test:backup
 
       - name: Run offline sync test against real server and PostgreSQL
         working-directory: tests/e2e
