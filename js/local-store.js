@@ -19,6 +19,8 @@
   const AAD = "dokhtyar.local.v3";
   const BACKUP_KEY = "dokhtyar.backup.v3"; // نسخه‌ی رمزشده‌ی داده‌ی جایگزین‌شده (هیچ‌وقت خودکار حذف نمی‌شود)
   const BACKUP_AAD = "dokhtyar.local.backup";
+  const SWAP_KEY = "dokhtyar.swap.v3"; // نسخه‌ی موقت داده‌ی فعلی در جابه‌جایی (فقط برای برگشت)
+  const SWAP_AAD = "dokhtyar.local.swap";
   const VAULT_CODES = ["vault_unavailable", "no_vault"];
   const UNREADABLE = ["key_missing", "decrypt_failed", "corrupt"];
 
@@ -383,8 +385,13 @@
         storage.setItem(V3_KEY, await seal(expected));
         if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
       } catch (err) {
-        storage.setItem(V3_KEY, v3Before);
-        if (backupWritten) storage.removeItem(BACKUP_KEY);
+        // پشتیبان (داده‌ی فعلی) فقط بعد از برگشت موفق v3 حذف می‌شود؛ اگر برگشت شکست بخورد، پشتیبان می‌ماند
+        try {
+          storage.setItem(V3_KEY, v3Before);
+          if (backupWritten) storage.removeItem(BACKUP_KEY);
+        } catch (rbErr) {
+          throw new Error("بازیابی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در پشتیبان نگه داشته شده است و نباید حذف شود (" + err.message + ")");
+        }
         throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
       }
       storage.removeItem(V2_KEY); // فقط بعد از تأیید هر دو نسخه
@@ -407,16 +414,33 @@
       const restored = tryParse(bakText);
       if (!restored) throw new Error("پشتیبان خراب است؛ هیچ‌چیز تغییر نکرد");
       const clean = sanitize(restored);
+      // مرحله‌ها به‌گونه‌ای‌اند که هر دو داده همیشه در حداقل یک انبار باشند:
+      // ۱) داده‌ی فعلی به انبار موقت؛ ۲) اصلی ← پشتیبان؛ ۳) پشتیبان ← داده‌ی فعلی.
+      // برگشت: اول پشتیبان (که داده‌ی فعلی را هنوز در موقت دارد)، سپس اصلی. انبار موقت تا پایان حذف نمی‌شود.
+      // step: آخرین نوشتنی که شروع شده (پیش از بازخوانی تأیید)؛ برگشت باید همان را جبران کند
+      let step = 0;
       try {
+        storage.setItem(SWAP_KEY, await seal(curText, SWAP_AAD));
+        step = 1;
+        if ((await open(storage.getItem(SWAP_KEY), SWAP_AAD)) !== curText) throw new Error("بازخوانی تأیید نشد");
         storage.setItem(V3_KEY, await seal(bakText));
-        storage.setItem(BACKUP_KEY, await seal(curText, BACKUP_AAD, false));
+        step = 2;
         if ((await open(storage.getItem(V3_KEY))) !== bakText) throw new Error("بازخوانی تأیید نشد");
+        storage.setItem(BACKUP_KEY, await seal(curText, BACKUP_AAD, false));
+        step = 3;
         if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== curText) throw new Error("بازخوانی تأیید نشد");
       } catch (err) {
-        storage.setItem(V3_KEY, curEnv);
-        storage.setItem(BACKUP_KEY, bak);
+        try {
+          if (step >= 3) storage.setItem(BACKUP_KEY, bak);
+          if (step >= 2) storage.setItem(V3_KEY, curEnv);
+          storage.removeItem(SWAP_KEY); // فقط وقتی همه‌ی داده‌ها در اصلی و پشتیبان برگشته‌اند
+        } catch (rbErr) {
+          throw new Error("جابه‌جایی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در انبار موقت «" + SWAP_KEY + "» نگه داشته شده و نباید حذف شود (" + err.message + ")");
+        }
         throw new Error("جابه‌جایی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
       }
+      // داده‌ها پیش‌تر تأیید شده‌اند؛ اگر پاک‌کردن انبار موقت نشد، نسخه‌ی اضافه‌ی داده‌ی فعلی می‌ماند و بی‌ضرر است
+      try { storage.removeItem(SWAP_KEY); } catch (e) { /* بی‌ضرر */ }
       apply(clean);
       lastError = null; lastSavedAt = Date.now();
       return count(clean);
@@ -469,6 +493,6 @@
   root.LocalStore = {
     init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
     recoveryInfo, importLegacy, swapWithBackup, subscribe, getWriteStatus: writeStatus,
-    V2_KEY, V3_KEY, BACKUP_KEY, UNREADABLE, testing,
+    V2_KEY, V3_KEY, BACKUP_KEY, SWAP_KEY, UNREADABLE, testing,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1287,7 +1287,16 @@ async function boot() {
   // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود.
   // مهاجرت ساده→رمزشده همین‌جا هم انجام می‌شود (بدون اعمال روی state).
   await LocalStore.init({ storage: localStorage, target: null, seed: cloneSeed, onError: () => {} }).catch(() => {});
-  if (!Sync.isPersistent()) renderSessionBanner(true, SERVER_SESSION_TEXT);
+  if (!Sync.isPersistent()) {
+    renderSessionBanner(true, SERVER_SESSION_TEXT);
+    // بدون IndexedDB، تغییرهای در صف‌مانده فقط در همین صفحه‌اند؛ پیش از بستن صفحه هشدار بده
+    window.addEventListener("beforeunload", (e) => {
+      if (Sync.unsentSessionCount() > 0) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+  }
   legacyData = await LocalStore.readPlain().catch(() => null);
   state.orders = [];
   state.customers = [];

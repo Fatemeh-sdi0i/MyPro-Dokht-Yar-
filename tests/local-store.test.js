@@ -578,3 +578,81 @@ test('نشانگر: در حین بازیابی وضعیت «بازیابی» ا�
   assert.equal(LS.getWriteStatus().state, 'saved');
   void storage;
 });
+
+// ---------- شکست نوشتن در میانه‌ی ورود و جابه‌جایی ----------
+// انبار ساختگی که نوشتن‌ها را فقط وقتی کنترل شده شکست می‌دهد: نوشتن k‌ام، یا نوشتن از k‌ام به بعد (برگشت هم شکست می‌خورد).
+function armable(base) {
+  const ctl = { armed: false, failAt: 0, failAll: false, n: 0 };
+  const storage = {
+    map: base.map,
+    getItem: base.getItem,
+    removeItem: base.removeItem,
+    setItem(k, v) {
+      if (ctl.armed) {
+        ctl.n += 1;
+        if (ctl.n === ctl.failAt || (ctl.failAll && ctl.n >= ctl.failAt)) throw new Error("نوشتن شکست خورد (آزمون)");
+      }
+      base.setItem(k, v);
+    },
+  };
+  return { storage, ctl };
+}
+
+// آیا داده‌ی با این نام هنوز در یکی از انبارها قابل خواندن است؟ (ساده، رمزشده‌ی اصلی، پشتیبان، موقت)
+async function recoverable(map, name) {
+  const plain = map.get(V2_KEY);
+  if (plain) { try { if (JSON.parse(plain).customers[0].name === name) return true; } catch (e) { /* ادامه */ } }
+  for (const [key, aad] of [[V3_KEY, 'dokhtyar.local.v3'], [BACKUP_KEY, 'dokhtyar.local.backup'], [LS.SWAP_KEY, 'dokhtyar.local.swap']]) {
+    const env = map.get(key);
+    if (!env) continue;
+    try {
+      if (JSON.parse(await LS.testing.openAny(env, aad)).customers[0].name === name) return true;
+    } catch (e) { /* این انبار خوانا نیست؛ بقیه را بررسی کن */ }
+  }
+  return false;
+}
+
+// وضعیت شروع: داده‌ی فعلی «جدید» در رمزشده، و نسخه‌ی ساده‌ی قدیمی «قدیمی» که هنوز وارد نشده
+async function armedStart() {
+  const base = fakeStorage();
+  const { storage, ctl } = armable(base);
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'جدید-آزمون', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  base.map.set(V2_KEY, JSON.stringify(legacyState('قدیمی-آزمون')));
+  LS.testing.reset();
+  const again = await startWith(storage);
+  return { base, ctl, target: again.target };
+}
+
+for (const failAll of [false, true]) {
+  test(`ورود داده‌ی قدیمی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'فقط یک نوشتن شکست می‌خورد'}): هیچ‌کدام از دو داده گم نمی‌شود`, async () => {
+    for (let failAt = 1; failAt <= 5; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      let ok = true;
+      try { await LS.importLegacy(); } catch (e) { ok = false; }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      assert.ok(await recoverable(base.map, 'قدیمی-آزمون'), `نقطه‌ی شکست ${failAt}: نسخه‌ی قدیمی باید بماند`);
+      if (!ok) assert.equal(LS.getStatus().locked, false, `نقطه‌ی شکست ${failAt}: قفل نباید بماند`);
+    }
+  });
+}
+
+for (const failAll of [false, true]) {
+  test(`جابه‌جایی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'فقط یک نوشتن شکست می‌خورد'}): داده‌ی فعلی و پشتیبان هیچ‌کدام گم نمی‌شوند`, async () => {
+    for (let failAt = 1; failAt <= 7; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      await LS.importLegacy(); // اکنون: اصلی = قدیمی، پشتیبان = جدید
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      let swapped = true;
+      try { await LS.swapWithBackup(); } catch (e) { swapped = false; }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      assert.ok(await recoverable(base.map, 'قدیمی-آزمون'), `نقطه‌ی شکست ${failAt}: پشتیبان باید بماند`);
+      // اگر جابه‌جایی شکست خورد و برگشت کامل شد، انبار موقت باید پاک شده باشد
+      if (!swapped && !failAll) assert.equal(base.map.has(LS.SWAP_KEY), false, `نقطه‌ی شکست ${failAt}: انبار موقت باید پاک شود`);
+    }
+  });
+}

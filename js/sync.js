@@ -348,6 +348,15 @@
     return ops.sort((a, b) => a.order - b.order);
   }
 
+  // همگام (برای beforeunload): تعداد تغییرات داده‌ای که فقط در حافظه‌ی همین صفحه‌اند.
+  // فقط وقتی IndexedDB نباشد صف در حافظه می‌ماند؛ در غیر این صورت صف پایدار است و هشداری لازم نیست.
+  function unsentSessionCount() {
+    if (root.indexedDB) return 0;
+    let n = 0;
+    for (const op of memory.queue.values()) if (op.path !== LOGOUT_PATH) n += 1;
+    return n;
+  }
+
   // تعداد تغییرات داده (بدون عملیات خروج)
   async function pendingCount() {
     return (await pendingOps()).filter((o) => o.path !== LOGOUT_PATH).length;
@@ -663,7 +672,7 @@
     testing,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
-    pendingOps, pendingCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
+    pendingOps, pendingCount, unsentSessionCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
     saveCache, loadCache, applyPending,
   };
 })(typeof window !== "undefined" ? window : globalThis);
