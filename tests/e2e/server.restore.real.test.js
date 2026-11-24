@@ -16,12 +16,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let browser;
 const contexts = [];
+let shared = null;
 before(async () => { if (!SKIP) browser = await chromium.launch(); });
 after(async () => {
   for (const c of contexts) await c.close().catch(() => {});
   await browser?.close();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// یک ورود برای کل فایل: سرور تعداد تلاش ورود را محدود می‌کند
+async function session() {
+  if (!shared) shared = await openAsAdmin();
+  return shared;
+}
 
 async function openAsAdmin() {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "allow" });
@@ -54,13 +61,14 @@ async function restoreFromText(page, text, name) {
   fs.writeFileSync(file, text, "utf8");
   await page.click('.nav-item[data-page="settings"]');
   await page.setInputFiles("#backupCheckFile", file);
+  await page.click("#backupCheckBtn");
   await page.waitForFunction(() => !document.querySelector("#backupRestoreBtn").hidden, null, { timeout: 8000 });
   await page.click("#backupRestoreBtn");
   await sleep(1200);
 }
 
 test("سرور واقعی: بازگردانی فایل سالم و نسخه‌ی پیش از بازگردانی", { skip: SKIP }, async () => {
-  const { page, errors } = await openAsAdmin();
+  const { page, errors } = await session();
   const before1 = await exportJson(page);
   const marker = "بازگردانی-واقعی-" + Date.now().toString(36);
   // تغییر: یک مشتری تازه که پس از بازگردانی نباید بماند
@@ -81,7 +89,7 @@ test("سرور واقعی: بازگردانی فایل سالم و نسخه‌ی
 });
 
 test("سرور واقعی: فایل دست‌کاری‌شده رد می‌شود و داده تغییر نمی‌کند", { skip: SKIP }, async () => {
-  const { page, errors } = await openAsAdmin();
+  const { page, errors } = await session();
   const current = await exportJson(page);
   const tampered = JSON.parse(JSON.stringify(current));
   delete tampered.exported_at;
@@ -97,7 +105,7 @@ test("سرور واقعی: فایل دست‌کاری‌شده رد می‌شو�
 });
 
 test("سرور واقعی: نسخه‌ی پیش از بازگردانی دانلود می‌شود", { skip: SKIP }, async () => {
-  const { page, errors } = await openAsAdmin();
+  const { page, errors } = await session();
   await page.click('.nav-item[data-page="settings"]');
   await page.waitForSelector("#downloadSnapshotBtn:not([hidden])", { timeout: 8000 });
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 10000 }), page.click("#downloadSnapshotBtn")]);
@@ -109,7 +117,7 @@ test("سرور واقعی: نسخه‌ی پیش از بازگردانی دانل
 });
 
 test("سرور واقعی: حذف تراکنش و بازگردانی آن", { skip: SKIP }, async () => {
-  const { page, errors } = await openAsAdmin();
+  const { page, errors } = await session();
   const amount = 123000 + Math.floor(Math.random() * 1000);
   await page.click('.nav-item[data-page="finance"]');
   await page.click("#addTxBtn");

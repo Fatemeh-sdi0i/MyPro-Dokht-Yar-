@@ -146,3 +146,29 @@ test(`[${ENGINE}] اگر کلید در IndexedDB ذخیره نشود، حالت 
   assert.equal(await page.evaluate(() => LocalStore.pendingCount()), 0, "نوشتنی معلق نمانده است");
   assert.deepEqual(errors, []);
 });
+
+// سازگاری APIها و طرح‌بندی موبایل: هر مرورگری (از جمله WebKit و Firefox) باید APIهای لازم را داشته باشد
+// و صفحه در عرض موبایل بدون اسکرول افقی باشد.
+test(`[${ENGINE}] APIهای لازم موجودند و طرح‌بندی موبایل بدون اسکرول افقی است`, async () => {
+  const ctx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: ENGINE !== "firefox",
+    hasTouch: true,
+    serviceWorkers: "allow",
+  });
+  contexts.push(ctx);
+  const { page, errors } = await open(ctx);
+  const caps = await page.evaluate(() => ({
+    randomUUID: typeof crypto !== "undefined" && typeof crypto.randomUUID === "function",
+    subtle: typeof crypto !== "undefined" && !!crypto.subtle,
+    indexedDB: typeof indexedDB !== "undefined",
+    allSettled: typeof Promise.allSettled === "function",
+    overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  }));
+  assert.equal(caps.randomUUID, true, "crypto.randomUUID موجود است");
+  assert.equal(caps.subtle, true, "WebCrypto (crypto.subtle) موجود است");
+  assert.equal(caps.indexedDB, true, "IndexedDB موجود است");
+  assert.equal(caps.allSettled, true, "Promise.allSettled موجود است");
+  assert.ok(caps.overflowX <= 1, `بدون اسکرول افقی در موبایل (سرریز: ${caps.overflowX}px)`);
+  assert.deepEqual(errors, []);
+});
