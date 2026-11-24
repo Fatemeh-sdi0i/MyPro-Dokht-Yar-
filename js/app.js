@@ -894,13 +894,19 @@ async function restoreVerifiedBackup() {
   }
 }
 
-function resetData() {
+// بازگردانی داده‌های نمونه از همان مسیر ایمن بازگردانی فایل: داده‌ی فعلی پیش از آن در پشتیبان محافظت‌شده می‌ماند
+async function resetData() {
   if (REMOTE) return;
-  if (!confirm("همه‌ی داده‌ها به حالت نمونه برگردند؟ این کار قابل بازگشت نیست.")) return;
-  Object.assign(state, cloneSeed());
-  persist();
-  renderAll();
-  toast("داده‌ها به حالت اولیه برگشتند.");
+  const blocked = LocalStore.restoreBlockedReason();
+  if (blocked) return toast(blocked);
+  if (!confirm("داده‌ها به حالت نمونه برمی‌گردند. داده‌ی فعلی در پشتیبان محافظت‌شده نگه داشته می‌شود و حذف نمی‌شود. ادامه می‌دهید؟")) return;
+  try {
+    await LocalStore.restoreBackup(cloneSeed());
+    renderAll();
+    toast("داده‌ها به حالت نمونه برگشتند. داده‌ی قبلی در پشتیبان محافظت‌شده است.");
+  } catch (err) {
+    toast(err.message || "بازگردانی داده‌ی نمونه انجام نشد؛ چیزی تغییر نکرد.");
+  }
 }
 
 /* ---------- مودال‌ها ---------- */
@@ -931,6 +937,15 @@ function formDateToIso(value) {
   return iso || undefined;
 }
 
+// مبلغ عدد صحیح و نامنفی است؛ خالی یعنی ۰. ورودی نامعتبر (متن، اعشار، منفی) null می‌دهد و هرگز بی‌صدا ۰ نمی‌شود.
+function parseWholeAmount(raw) {
+  const s = toEnDigits(String(raw ?? "")).replace(/[,٬\s]/g, "");
+  if (s === "") return 0;
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 async function submitOrder(e) {
   e.preventDefault();
   const d = new FormData(e.target);
@@ -938,10 +953,11 @@ async function submitOrder(e) {
   const description = String(d.get("description")).trim();
   const type = d.get("type");
   const status = d.get("status");
-  const price = Number(toEnDigits(d.get("price") || "0")) || 0;
+  if (!customerName) { toast("نام مشتری را وارد کنید."); return; }
+  const price = parseWholeAmount(d.get("price"));
+  if (price === null) { toast("قیمت باید عدد صحیح و بدون اعشار باشد."); return; }
 
   if (REMOTE) {
-    if (!Number.isInteger(price) || price < 0) { toast("قیمت باید عدد صحیح و بدون اعشار باشد."); return; }
     const dueIso = formDateToIso(d.get("due"));
     if (dueIso === undefined) { toast("تاریخ تحویل باید به شکل ۱۴۰۵/۰۹/۲۰ باشد."); return; }
     const ok = await run(async () => {
@@ -993,6 +1009,7 @@ async function submitCustomer(e) {
   const name = String(d.get("name")).trim();
   const phone = String(d.get("phone")).trim();
   const note = String(d.get("note") || "").trim();
+  if (!name) { toast("نام مشتری را وارد کنید."); return; }
 
   if (REMOTE) {
     const ok = await run(() => w("POST", "/customers", { id: Sync.uuid(), name, phone, note }, { title: `مشتری: ${name}`, detail: phone }), "مشتری جدید اضافه شد.");
@@ -1013,6 +1030,7 @@ async function submitStaff(e) {
   const name = String(d.get("name")).trim();
   const role = String(d.get("role") || "").trim();
   const phone = String(d.get("phone") || "").trim();
+  if (!name) { toast("نام همکار را وارد کنید."); return; }
 
   if (REMOTE) {
     const ok = await run(() => w("POST", "/staff", { id: Sync.uuid(), name, role_title: role, phone }, { title: `همکار: ${name}`, detail: role || "" }), "همکار جدید اضافه شد.");
@@ -1032,9 +1050,9 @@ async function submitStaff(e) {
 async function submitTransaction(e) {
   e.preventDefault();
   const d = new FormData(e.target);
-  const amount = Number(toEnDigits(d.get("amount")));
-  if (!(amount > 0)) {
-    toast("مبلغ باید بزرگ‌تر از صفر باشد.");
+  const amount = parseWholeAmount(d.get("amount"));
+  if (amount === null || amount <= 0) {
+    toast("مبلغ باید عدد صحیح و بزرگ‌تر از صفر باشد.");
     return;
   }
 

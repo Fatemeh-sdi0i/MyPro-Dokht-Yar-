@@ -126,3 +126,45 @@ test("بازه‌ی شش ماه اخیر برچسب‌های کمتری دارد
   assert.equal(await page.evaluate(() => document.querySelectorAll("#monthlyLabels span").length), 12);
   assert.deepEqual(errors, []);
 });
+
+// فرم‌ها در مرورگر محدودیت HTML دارند (min و step)؛ این آزمون آن‌ها را خاموش می‌کند تا منطق خود اپ بررسی شود
+test("اعتبارسنجی مبلغ و نام در حالت محلی: ورودی نامعتبر ذخیره نمی‌شود", async () => {
+  const { page, errors } = await openApp();
+  const noValidate = (sel) => page.evaluate((s) => { document.querySelector(s).noValidate = true; }, sel);
+  const submit = async (formSel) => { await page.click(`${formSel} button[type="submit"]`); await sleep(250); };
+
+  const orders = await orderCount(page);
+  await page.click('.nav-item[data-page="orders"]');
+  await page.click("#addOrderBtn");
+  await noValidate("#orderForm");
+  await page.fill('#orderForm input[name="customer"]', "مشتری-قیمت");
+  await page.fill('#orderForm input[name="description"]', "دوخت-آزمون");
+  await page.fill('#orderForm input[name="price"]', "-5");
+  await submit("#orderForm");
+  assert.equal(await orderCount(page), orders, "قیمت منفی ذخیره نشد");
+  assert.match(await toastText(page), /قیمت باید عدد صحیح/);
+  await page.fill('#orderForm input[name="price"]', "1.5");
+  await submit("#orderForm");
+  assert.equal(await orderCount(page), orders, "قیمت اعشاری ذخیره نشد");
+  await page.keyboard.press("Escape");
+
+  const customers = await page.evaluate(() => state.customers.length);
+  await page.click('.nav-item[data-page="customers"]');
+  await page.click("#addCustomerBtn");
+  await noValidate("#customerForm");
+  await page.fill("#customerForm input[name=name]", "   ");
+  await submit("#customerForm");
+  assert.equal(await page.evaluate(() => state.customers.length), customers, "مشتری بدون نام ذخیره نشد");
+  assert.match(await toastText(page), /نام مشتری را وارد کنید/);
+  await page.keyboard.press("Escape");
+
+  const txs = await txCount(page);
+  await page.click('.nav-item[data-page="finance"]');
+  await page.click("#addTxBtn");
+  await noValidate("#txForm");
+  await page.fill('#txForm input[name="amount"]', "1.5");
+  await submit("#txForm");
+  assert.equal(await txCount(page), txs, "مبلغ اعشاری تراکنش ذخیره نشد");
+  assert.match(await toastText(page), /مبلغ باید عدد صحیح/);
+  assert.deepEqual(errors, []);
+});

@@ -183,3 +183,20 @@ test("فایل حالت سرور در حالت محلی بازگردانی نم�
   assert.equal(await raw(page, BACKUP), null);
   assert.deepEqual(errors, []);
 });
+
+test("بازگردانی داده‌ی نمونه: داده‌ی فعلی در پشتیبان می‌ماند؛ بار دوم با پیام روشن رد می‌شود", async () => {
+  const { page, errors, unexpected } = await openApp([{ ok: true }]);
+  await addCustomer(page, FIRST);
+  assert.ok((await customerNames(page)).includes(FIRST));
+
+  await page.click("#resetBtn"); // تأیید اول
+  await waitFor(async () => !(await customerNames(page)).includes(FIRST), "بازگشت به داده‌ی نمونه");
+  assert.equal(await backupHolds(page, FIRST), true, "داده‌ی پیش از بازگردانی نمونه در پشتیبان محافظت‌شده است");
+
+  // بار دوم: پشتیبان هست؛ هیچ تأیید یا تغییری نباید رخ دهد
+  await page.click("#resetBtn");
+  await waitFor(async () => /پشتیبان محافظت‌شده از قبل/.test(await page.textContent("#toast")), "پیام رد بازگردانی دوم");
+  assert.equal(await backupHolds(page, FIRST), true, "پشتیبان دست‌نخورده است");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+});

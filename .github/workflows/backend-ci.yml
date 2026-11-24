@@ -196,6 +196,36 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:offline-server
 
+      - name: Run server-mode export test against real server and PostgreSQL (plaintext, encrypted, non-admin refused)
+        working-directory: tests/e2e
+        run: npm run test:export-server
+
       - name: Show server log on failure
         if: failure()
         run: cat "$RUNNER_TEMP/server.log" || true
+
+  browser-compat:
+    name: Browser compatibility (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install browser test dependencies
+        working-directory: tests/e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run compatibility test (encrypted local storage, reload, encrypted backup)
+        working-directory: tests/e2e
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npm run test:compat
