@@ -148,11 +148,11 @@ test("مدیر: پشتیبان ساده‌ی حالت سرور همان داده
   assert.ok(data.customers.some((c) => c.name === CUSTOMER), "مشتری در پشتیبان است");
   assert.equal(await page.evaluate(() => localStorage.getItem("dokhtyar.v3")), null, "حالت سرور داده‌ی محلی نمی‌نویسد");
 
-  // بررسی همین فایل: معتبر، بدون بازگردانی
+  // بررسی همین فایل: معتبر و بدون تغییر داده؛ بازگردانی سرور فقط مدیر می‌بیند
   await page.setInputFiles("#backupCheckFile", path.join(tmp, dl.name));
   await page.click("#backupCheckBtn");
-  await waitFor(async () => /حالت سرور/.test(await page.textContent("#backupMsg")), "پیام حالت سرور");
-  assert.equal(await page.evaluate(() => document.querySelector("#backupRestoreBtn").hidden), true, "بازگردانی حالت سرور نشان داده نمی‌شود");
+  await waitFor(async () => /پشتیبان همین سرور/.test(await page.textContent("#backupMsg")), "پیام پشتیبان همین سرور");
+  assert.equal(await page.evaluate(() => document.querySelector("#backupRestoreBtn").hidden), false, "بازگردانی روی سرور برای مدیر نشان داده می‌شود");
   assert.deepEqual(errors, []);
   assert.deepEqual(dialogs, []);
 });

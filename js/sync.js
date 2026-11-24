@@ -603,6 +603,7 @@
       orders: [...(raw.orders || [])],
       staff: [...(raw.staff || [])],
       transactions: [...(raw.transactions || [])],
+      deletedTransactions: [...(raw.deletedTransactions || [])],
       settings: { ...(raw.settings || {}) },
     };
     for (const op of ops) {
@@ -630,7 +631,10 @@
         out.transactions.unshift({ id: body.id, kind: body.kind, category: body.category, amount: body.amount,
           occurred_on: body.occurred_on || todayIso(op.createdAt), note: body.note || "", _pending: true });
       } else if (method === "DELETE" && (m = path.match(/^\/transactions\/([^/]+)$/))) {
+        // حذف در صف: ردیف از فهرست اصلی به فهرست حذف‌شده‌ها می‌رود تا بازگردانی ممکن بماند
+        const gone = out.transactions.find((t) => t.id === m[1]);
         out.transactions = out.transactions.filter((t) => t.id !== m[1]);
+        if (gone && !out.deletedTransactions.some((t) => t.id === m[1])) out.deletedTransactions.unshift({ ...gone, _pending: true });
       } else if (method === "PUT" && path === "/settings") {
         Object.assign(out.settings, body);
       }

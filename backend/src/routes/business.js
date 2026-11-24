@@ -1,4 +1,6 @@
 const { normalizePhone, isoDate, HttpError, existingOwned, isIdRace } = require('../util');
+const { buildExport } = require('../export');
+const { replaceShopData } = require('../restore');
 
 const requireAdmin = async (req) => {
   if (req.user.role !== 'admin') throw new HttpError(403, 'forbidden', 'این کار فقط برای مدیر مجاز است');
@@ -179,6 +181,24 @@ module.exports = async function businessRoutes(app, { db }) {
     return { ok: true };
   });
 
+  // تراکنش‌های حذف‌شده (حذف نرم): فهرست برای بازگردانی
+  app.get('/transactions/deleted', async (req) => {
+    const { rows } = await db.query(
+      `SELECT * FROM transactions WHERE shop_id = $1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500`,
+      [req.user.shop_id]
+    );
+    return { items: rows.map((t) => ({ ...txOut(t), deleted_at: t.deleted_at })) };
+  });
+
+  app.post('/transactions/:id/restore', { schema: { params: idParam } }, async (req) => {
+    const { rows } = await db.query(
+      'UPDATE transactions SET deleted_at = NULL WHERE id = $1 AND shop_id = $2 AND deleted_at IS NOT NULL RETURNING *',
+      [req.params.id, req.user.shop_id]
+    );
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'تراکنش حذف‌شده پیدا نشد');
+    return txOut(rows[0]);
+  });
+
   // ---------- گزارش‌ها ----------
   app.get('/reports/summary', async (req) => {
     const shopId = req.user.shop_id;
@@ -263,20 +283,31 @@ module.exports = async function businessRoutes(app, { db }) {
   });
 
   // ---------- پشتیبان JSON (فقط مدیر) ----------
-  app.get('/export', { preHandler: requireAdmin }, async (req) => {
-    const shopId = req.user.shop_id;
-    const [shop, customers, orders, staff, transactions] = await Promise.all([
-      db.query('SELECT * FROM shops WHERE id=$1', [shopId]),
-      db.query('SELECT id,name,phone,note,tier,created_at FROM customers WHERE shop_id=$1 AND deleted_at IS NULL ORDER BY name', [shopId]),
-      db.query(`SELECT o.id,o.order_no,c.name AS customer,o.type,o.description,o.status,o.price,o.created_on,o.due_on
-                  FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.shop_id=$1 AND o.deleted_at IS NULL ORDER BY o.order_no`, [shopId]),
-      db.query('SELECT id,name,role_title,phone,active FROM staff WHERE shop_id=$1 AND deleted_at IS NULL ORDER BY name', [shopId]),
-      db.query('SELECT id,kind,category,amount,occurred_on,note FROM transactions WHERE shop_id=$1 AND deleted_at IS NULL ORDER BY occurred_on', [shopId]),
-    ]);
-    return {
-      exported_at: new Date().toISOString(),
-      shop: settingsOut(shop.rows[0]),
-      customers: customers.rows, orders: orders.rows, staff: staff.rows, transactions: transactions.rows,
-    };
+  app.get('/export', { preHandler: requireAdmin }, async (req) => buildExport(db, req.user.shop_id));
+
+  // ---------- بازگردانی کامل از پشتیبان سرور (فقط مدیر) ----------
+  // پشتیبان کامل اعتبارسنجی، سپس نسخه‌ی پیش از بازگردانی ذخیره، و جایگزینی در یک تراکنش (backend/src/restore.js)
+  app.post('/import/replace', { preHandler: requireAdmin, bodyLimit: 20 * 1024 * 1024 }, async (req) =>
+    replaceShopData(db, req.user.shop_id, req.user.id, req.body)
+  );
+
+  app.get('/import/snapshots', { preHandler: requireAdmin }, async (req) => {
+    const { rows } = await db.query(
+      `SELECT id, created_at, reason,
+              jsonb_array_length(payload->'customers') AS customers,
+              jsonb_array_length(payload->'orders') AS orders,
+              jsonb_array_length(payload->'staff') AS staff,
+              jsonb_array_length(payload->'transactions') AS transactions
+         FROM shop_snapshots WHERE shop_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      [req.user.shop_id]
+    );
+    return { items: rows };
+  });
+
+  // خود نسخه به همان شکل پشتیبان برمی‌گردد تا بتوان آن را دوباره بازگرداند
+  app.get('/import/snapshots/:id', { preHandler: requireAdmin, schema: { params: idParam } }, async (req) => {
+    const { rows } = await db.query('SELECT payload FROM shop_snapshots WHERE id = $1 AND shop_id = $2', [req.params.id, req.user.shop_id]);
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'نسخه پیدا نشد');
+    return rows[0].payload;
   });
 };

@@ -126,6 +126,11 @@
         <div class="toolbar"><div class="chips"><button class="chip selected" data-tx-filter="all">همه</button><button class="chip" data-tx-filter="income">درآمد</button><button class="chip" data-tx-filter="expense">هزینه</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>تاریخ</th><th>نوع</th><th>دسته</th><th>شرح</th><th>مبلغ (تومان)</th><th>عملیات</th></tr></thead><tbody id="txBody"></tbody></table></div>
       </section>
+      <details class="panel table-panel tx-deleted" id="txDeletedWrap" hidden>
+        <summary>تراکنش‌های حذف‌شده (<span id="txDeletedCount">۰</span>)</summary>
+        <p class="muted">تراکنش‌های حذف‌شده نگه داشته می‌شوند و در جمع‌ها محاسبه نمی‌شوند. با «بازگردانی» دوباره فعال می‌شوند.</p>
+        <div class="table-wrap"><table><thead><tr><th>تاریخ</th><th>نوع</th><th>دسته</th><th>شرح</th><th>مبلغ (تومان)</th><th>عملیات</th></tr></thead><tbody id="txDeletedBody"></tbody></table></div>
+      </details>
     </section>
 
     <section class="page" id="reports">
@@ -192,8 +197,8 @@
             <div class="settings-actions">
               <button class="secondary-btn" id="exportEncryptedBtn" type="button">دانلود پشتیبان رمزشده</button>
             </div>
-            <h3>بررسی فایل پشتیبان</h3>
-            <p class="muted">فایل ساده یا رمزشده را بررسی می‌کند و هیچ داده‌ای را تغییر نمی‌دهد. بازگردانی از فایل در این نسخه وجود ندارد.</p>
+            <h3>بررسی و بازگردانی فایل پشتیبان</h3>
+            <p class="muted">فایل ساده یا رمزشده را بررسی می‌کند. بررسی هیچ داده‌ای را تغییر نمی‌دهد. بازگردانی فقط پس از بررسی موفق و با تأیید دوباره انجام می‌شود.</p>
             <label class="backup-field">فایل پشتیبان
               <input type="file" id="backupCheckFile" accept=".json,application/json">
             </label>
@@ -208,6 +213,9 @@
               <button class="secondary-btn danger" id="backupRestoreBtn" type="button" hidden>بازگردانی از این فایل…</button>
             </div>
             <p class="muted" id="backupRestoreNote" hidden></p>
+            <div class="settings-actions">
+              <button class="secondary-btn" id="downloadSnapshotBtn" type="button" hidden>دانلود نسخه‌ی پیش از آخرین بازگردانی</button>
+            </div>
           </div>
         </section>
       </div>

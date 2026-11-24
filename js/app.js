@@ -93,10 +93,11 @@ function mapOrder(o) {
 
 // داده‌ی خام سرور (شکل پاسخ API)
 async function fetchRaw() {
-  const [cust, ords, staff, txs, settings] = await Promise.all([
+  const [cust, ords, staff, txs, settings, deleted] = await Promise.all([
     Api.customers(), Api.orders(), Api.staff(), Api.transactions(), Api.settings(),
+    Api.deletedTransactions().catch((err) => (Sync.isNetworkError(err) ? Promise.reject(err) : { items: [] })),
   ]);
-  return { customers: cust.items, orders: ords.items, staff: staff.items, transactions: txs.items, settings };
+  return { customers: cust.items, orders: ords.items, staff: staff.items, transactions: txs.items, deletedTransactions: deleted.items, settings };
 }
 
 let offlineMode = false;
@@ -139,6 +140,9 @@ function applyRaw(d) {
     id: s.id, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), active: s.active,
   }));
   state.transactions = d.transactions.map((t) => ({
+    id: t.id, date: faDate(t.occurred_on), kind: t.kind, category: t.category, amount: t.amount, note: t.note,
+  }));
+  state.deletedTransactions = (d.deletedTransactions || []).map((t) => ({
     id: t.id, date: faDate(t.occurred_on), kind: t.kind, category: t.category, amount: t.amount, note: t.note,
   }));
   state.settings = {
@@ -639,9 +643,15 @@ async function toggleStaff(id) {
 
 /* ---------- امور مالی ---------- */
 
+// تراکنش‌های حذف‌شده (حذف نرم) در جمع‌ها و فهرست اصلی نیستند؛ فقط در بخش بازگردانی دیده می‌شوند
+function liveTransactions() {
+  return state.transactions.filter((t) => !t.deletedAt);
+}
+
 function renderFinance() {
-  const manualIncome = state.transactions.filter((t) => t.kind === "income").reduce((s, t) => s + t.amount, 0);
-  const expense = state.transactions.filter((t) => t.kind === "expense").reduce((s, t) => s + t.amount, 0);
+  const live = liveTransactions();
+  const manualIncome = live.filter((t) => t.kind === "income").reduce((s, t) => s + t.amount, 0);
+  const expense = live.filter((t) => t.kind === "expense").reduce((s, t) => s + t.amount, 0);
   const orderIncome = deliveredRevenue();
   const balance = orderIncome + manualIncome - expense;
 
@@ -650,7 +660,7 @@ function renderFinance() {
   $("#finExpense").textContent = formatMoney(expense);
   $("#finBalance").textContent = formatMoney(balance);
 
-  const filtered = state.transactions.filter((t) => activeTxFilter === "all" || t.kind === activeTxFilter);
+  const filtered = live.filter((t) => activeTxFilter === "all" || t.kind === activeTxFilter);
   // محلی: جدیدترین اول (آخرین افزوده‌شده‌ها در انتها هستند)؛ سرور از قبل مرتب است
   const rows = REMOTE ? filtered : filtered.slice().reverse();
 
@@ -667,19 +677,65 @@ function renderFinance() {
         </tr>`
       )
       .join("") || '<tr><td colspan="6">تراکنشی برای نمایش وجود ندارد.</td></tr>';
+  renderDeletedTransactions();
 }
 
+function renderDeletedTransactions() {
+  const rows = REMOTE
+    ? (state.deletedTransactions || [])
+    : state.transactions.filter((t) => t.deletedAt).slice().reverse();
+  $("#txDeletedWrap").hidden = rows.length === 0;
+  $("#txDeletedCount").textContent = toFaDigits(String(rows.length));
+  $("#txDeletedBody").innerHTML = rows
+    .map(
+      (t) => `<tr>
+          <td>${esc(t.date)}</td>
+          <td><span class="status ${t.kind === "income" ? "delivered" : "ready"}">${t.kind === "income" ? "درآمد" : "هزینه"}</span></td>
+          <td>${esc(t.category)}</td>
+          <td>${esc(t.note) || "—"}</td>
+          <td>${formatMoney(t.amount)}</td>
+          <td><button class="chip" data-restore-tx="${esc(t.id)}">بازگردانی</button></td>
+        </tr>`
+    )
+    .join("");
+}
+
+// حذف نرم: ردیف نگه داشته می‌شود تا تاریخچه‌ی مالی کامل بماند و بازگردانی ممکن باشد
 async function deleteTransaction(id) {
-  if (!confirm("این تراکنش حذف شود؟")) return;
+  if (!confirm("این تراکنش حذف شود؟ از بخش «تراکنش‌های حذف‌شده» بازگردانی می‌شود.")) return;
   if (REMOTE) {
     await run(() => w("DELETE", `/transactions/${id}`, undefined, { title: "حذف تراکنش", detail: "" }), "تراکنش حذف شد.");
     return;
   }
-  state.transactions = state.transactions.filter((t) => String(t.id) !== String(id));
+  const t = state.transactions.find((x) => String(x.id) === String(id));
+  if (!t) return;
+  t.deletedAt = new Date().toISOString();
   persist();
   renderFinance();
   renderReports();
-  toast("تراکنش حذف شد.");
+  toast("تراکنش حذف شد. از بخش «تراکنش‌های حذف‌شده» می‌توانید بازگردانید.");
+}
+
+async function restoreTransaction(id) {
+  if (REMOTE) {
+    try {
+      await Api.restoreTransaction(id);
+      await loadRemote();
+      renderAll();
+      toast("تراکنش بازگردانده شد.");
+    } catch (err) {
+      if (err.status === 401) { showGate(); toast("نشست شما پایان یافته است؛ دوباره وارد شوید."); }
+      else toast(err.message || "بازگردانی تراکنش انجام نشد.");
+    }
+    return;
+  }
+  const t = state.transactions.find((x) => String(x.id) === String(id));
+  if (!t || !t.deletedAt) return;
+  t.deletedAt = null;
+  persist();
+  renderFinance();
+  renderReports();
+  toast("تراکنش بازگردانده شد.");
 }
 
 /* ---------- گزارش‌ها ---------- */
@@ -832,9 +888,12 @@ let verifiedBackup = null;
 function renderRestoreControls() {
   const btn = $("#backupRestoreBtn");
   const note = $("#backupRestoreNote");
-  const blocked = !REMOTE && verifiedBackup && verifiedBackup.kind === "local" ? LocalStore.restoreBlockedReason() : null;
-  btn.hidden = REMOTE || !verifiedBackup || verifiedBackup.kind !== "local";
+  const wanted = REMOTE ? "server" : "local";
+  const usable = Boolean(verifiedBackup) && verifiedBackup.kind === wanted;
+  const blocked = usable && !REMOTE ? LocalStore.restoreBlockedReason() : null;
+  btn.hidden = !usable;
   btn.disabled = Boolean(blocked);
+  btn.textContent = REMOTE ? "بازگردانی روی سرور…" : "بازگردانی از این فایل…";
   note.textContent = blocked || "";
   note.hidden = !blocked;
 }
@@ -858,9 +917,13 @@ async function checkBackupFile() {
       r = { ...BackupCrypto.parseBackup(text), encrypted: false };
     }
     const c = r.counts;
-    const kindText = r.kind === "server"
-      ? "این فایل پشتیبان حالت سرور است و در حالت محلی بازگردانی نمی‌شود."
-      : "می‌توانید از همین فایل بازگردانی کنید.";
+    const kindText = REMOTE
+      ? (r.kind === "server"
+        ? "این فایل از پشتیبان همین سرور است و می‌توانید از آن بازگردانی کنید. پیش از بازگردانی، داده‌ی فعلی سرور در نسخه‌ی محافظت‌شده ذخیره می‌شود."
+        : "این فایل حالت محلی است و در حالت سرور بازگردانی نمی‌شود.")
+      : (r.kind === "server"
+        ? "این فایل پشتیبان حالت سرور است و در حالت محلی بازگردانی نمی‌شود."
+        : "می‌توانید از همین فایل بازگردانی کنید.");
     setBackupMsg(
       `فایل ${r.encrypted ? "رمزشده" : "ساده"} معتبر است: ${c.customers} مشتری، ${c.orders} سفارش، ${c.staff} همکار، ${c.transactions} تراکنش. ` +
       `هیچ داده‌ای تغییر نکرد. ${kindText}`,
@@ -875,6 +938,7 @@ async function checkBackupFile() {
 
 // بازگردانی از فایلی که همین حالا بررسی شده. داده‌ی فعلی پیش از آن در پشتیبان محافظت‌شده می‌ماند.
 async function restoreVerifiedBackup() {
+  if (REMOTE) return restoreOnServer();
   if (!verifiedBackup || verifiedBackup.kind !== "local") return;
   const blocked = LocalStore.restoreBlockedReason();
   if (blocked) return setBackupMsg(blocked, true);
@@ -891,6 +955,43 @@ async function restoreVerifiedBackup() {
   } catch (err) {
     setBackupMsg(backupErrorText(err), true);
     renderRestoreControls();
+  }
+}
+
+// بازگردانی کامل روی سرور: پشتیبان سرور کامل اعتبارسنجی می‌شود و سرور پیش از جایگزینی نسخه می‌گیرد.
+// اگر تغییری در صف آفلاین مانده باشد بازگردانی انجام نمی‌شود، چون با داده‌ی جدید ناسازگار می‌شود.
+async function restoreOnServer() {
+  if (!verifiedBackup || verifiedBackup.kind !== "server") return;
+  if ((await Sync.pendingCount()) > 0) {
+    return setBackupMsg("ابتدا تغییرهای همگام‌نشده را ارسال کنید؛ در غیر این صورت با بازگردانی از بین می‌روند. چیزی تغییر نکرد.", true);
+  }
+  const c = verifiedBackup.counts;
+  if (!confirm(`همه‌ی داده‌ی این مزون روی سرور با این فایل جایگزین می‌شود (مشتری ${c.customers}، سفارش ${c.orders}، همکار ${c.staff}، تراکنش ${c.transactions}). داده‌ی فعلی پیش از آن روی سرور ذخیره می‌شود. ادامه می‌دهید؟`)) return;
+  if (prompt("برای تأیید، کلمه‌ی «بازگردانی» را بنویسید:") !== "بازگردانی") return setBackupMsg("بازگردانی انجام نشد؛ چیزی تغییر نکرد.", true);
+  setBackupMsg("در حال بازگردانی روی سرور…", false);
+  try {
+    const result = await Api.replaceFromBackup(verifiedBackup.data);
+    verifiedBackup = null;
+    renderRestoreControls();
+    await loadRemote();
+    renderAll();
+    setBackupMsg(`داده از فایل بازگردانی شد. نسخه‌ی پیش از بازگردانی روی سرور ذخیره شد (شناسه: ${result.snapshot_id}).`, false);
+  } catch (err) {
+    setBackupMsg(err.status === 401 ? "نشست شما پایان یافته است؛ دوباره وارد شوید. چیزی تغییر نکرد." : (err.message || backupErrorText(err)), true);
+    renderRestoreControls();
+  }
+}
+
+// آخرین نسخه‌ی پیش از بازگردانی را به همان شکل پشتیبان دانلود می‌کند
+async function downloadLatestSnapshot() {
+  try {
+    const { items } = await Api.snapshots();
+    if (!items.length) return setBackupMsg("هنوز نسخه‌ای پیش از بازگردانی ذخیره نشده است.", true);
+    const payload = await Api.snapshot(items[0].id);
+    downloadText(`dokhtyar-snapshot-${String(items[0].created_at).slice(0, 10)}.json`, JSON.stringify(payload, null, 2));
+    setBackupMsg("نسخه‌ی پیش از آخرین بازگردانی دانلود شد.", false);
+  } catch (err) {
+    setBackupMsg(err.message || backupErrorText(err), true);
   }
 }
 
@@ -1323,6 +1424,12 @@ function bindEvents() {
   $("#monthlyRange").addEventListener("change", renderMonthlyChart);
   $("#backupCheckFile").addEventListener("change", () => { verifiedBackup = null; renderRestoreControls(); });
   $("#resetBtn").addEventListener("click", resetData);
+  $("#downloadSnapshotBtn").hidden = !REMOTE;
+  $("#downloadSnapshotBtn").addEventListener("click", downloadLatestSnapshot);
+  $("#txDeletedBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-restore-tx]");
+    if (btn) restoreTransaction(btn.dataset.restoreTx);
+  });
 
   $("#globalSearch").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -1358,7 +1465,7 @@ async function bootLocal() {
     showLocalLock(st);
     return;
   }
-  renderSessionBanner(st.sessionOnly, LOCAL_SESSION_TEXT);
+  renderSessionBanner(st.sessionOnly, st.reason === "key_unpersistable" ? KEY_UNPERSISTABLE_TEXT : LOCAL_SESSION_TEXT);
   if (st.migrationPending) toast("انتقال به حالت رمزشده کامل نشد؛ نسخه‌ی ساده‌ی قبلی دست‌نخورده مانده است.");
   if (st.staleLegacy) toast("یک نسخه‌ی ساده‌ی قدیمی از داده روی این دستگاه مانده و دست‌نخورده است. از بخش «بازیابی» در تنظیمات می‌توانید آن را بررسی کنید.");
   if (st.legacyKept && st.sessionOnly) toast("نسخه‌ی ساده‌ی قدیمی روی این دستگاه دست‌نخورده مانده و در این مرورگر منتقل نشده است.");
@@ -1382,6 +1489,7 @@ function renderSaveIndicator(st) {
 }
 
 const LOCAL_SESSION_TEXT = "ذخیره‌ی دائمی در این مرورگر فعال نیست؛ داده فقط تا بستن این صفحه می‌ماند. پیش از خروج، پشتیبان JSON بگیرید.";
+const KEY_UNPERSISTABLE_TEXT = "این مرورگر نمی‌تواند کلید رمزنگاری را روی این دستگاه نگه دارد؛ داده فقط تا بستن این صفحه می‌ماند. پیش از خروج، پشتیبان JSON یا رمزشده بگیرید.";
 const SERVER_SESSION_TEXT = "این مرورگر IndexedDB ندارد؛ تغییرات آفلاین فقط تا بستن این صفحه نگه داشته می‌شوند و پیش از خروج همگام نشده‌اند.";
 
 function renderSessionBanner(on, text) {

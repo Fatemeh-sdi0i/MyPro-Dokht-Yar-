@@ -48,7 +48,7 @@ jobs:
           node-version: 20
 
       - name: Run unit tests
-        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js
+        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js tests/backup-validate.test.js
 
   api:
     name: API tests (Fastify + PostgreSQL)
@@ -199,6 +199,12 @@ jobs:
       - name: Run server-mode export test against real server and PostgreSQL (plaintext, encrypted, non-admin refused)
         working-directory: tests/e2e
         run: npm run test:export-server
+
+      - name: Run server restore and transaction undo browser tests (mock API and real server)
+        working-directory: tests/e2e
+        run: |
+          npm run test:restore-server
+          npm run test:undo
 
       - name: Show server log on failure
         if: failure()

@@ -62,9 +62,14 @@
     transactions: () => request("GET", "/transactions" + qs({})),
     createTransaction: (body) => request("POST", "/transactions", body),
     deleteTransaction: (id) => request("DELETE", `/transactions/${id}`),
+    deletedTransactions: () => request("GET", "/transactions/deleted"),
+    restoreTransaction: (id) => request("POST", `/transactions/${id}/restore`),
 
     settings: () => request("GET", "/settings"),
     saveSettings: (body) => request("PUT", "/settings", body),
     exportJson: () => request("GET", "/export"),
+    replaceFromBackup: (body) => request("POST", "/import/replace", body),
+    snapshots: () => request("GET", "/import/snapshots"),
+    snapshot: (id) => request("GET", `/import/snapshots/${id}`),
   };
 })(typeof window !== "undefined" ? window : globalThis);
