@@ -1,0 +1,440 @@
+// آزمون‌های واحد ذخیره‌سازی رمزشده‌ی حالت محلی (js/local-store.js).
+// localStorage با یک انبار ساختگی و کلید با حافظه‌ی داخلی (بدون IndexedDB) شبیه‌سازی می‌شود.
+const { test, beforeEach } = require("node:test");
+const assert = require("node:assert/strict");
+require("../js/local-store.js");
+
+const LS = globalThis.LocalStore;
+const { V2_KEY, V3_KEY, BACKUP_KEY } = LS;
+
+function fakeStorage(extra = {}) {
+  const map = new Map(Object.entries(extra));
+  return {
+    map,
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => map.set(k, String(v)),
+    removeItem: (k) => map.delete(k),
+  };
+}
+
+const seed = () => ({
+  orders: [],
+  customers: [{ name: "نمونه", phone: "", note: "" }],
+  staff: [],
+  transactions: [],
+  settings: { shopName: "مزون نمونه", ownerName: "", phone: "", address: "", currency: "تومان" },
+});
+
+const legacyState = (name) => ({
+  orders: [],
+  customers: [{ name, phone: "09120000000", note: "یادداشت-" + name }],
+  staff: [],
+  transactions: [],
+  settings: { shopName: "مزون قدیمی", ownerName: "", phone: "", address: "", currency: "تومان" },
+});
+
+async function startWith(storage, target = {}) {
+  for (const k of Object.keys(target)) delete target[k];
+  const st = await LS.init({ storage, target, seed });
+  return { st, target };
+}
+
+beforeEach(() => LS.testing.reset());
+
+test('راه‌اندازی تازه: نمونه، بدون نوشتن و بدون قفل', async () => {
+  const storage = fakeStorage();
+  const { st, target } = await startWith(storage);
+  assert.equal(st.ready, true);
+  assert.equal(st.locked, false);
+  assert.equal(target.customers[0].name, 'نمونه');
+  assert.equal(storage.map.has(V3_KEY), false, 'بدون تغییر چیزی نوشته نمی‌شود');
+});
+
+test('ذخیره و خواندن دوباره: متن ساده در انبار نیست و داده برمی‌گردد', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'مریم-محرمانه', phone: '09121112233', note: 'یادداشت-محرمانه' }];
+  assert.equal(LS.save(target), true);
+  await LS.flush();
+  const raw = storage.map.get(V3_KEY);
+  assert.ok(raw, 'پاکت رمزشده نوشته شده');
+  assert.equal(raw.includes('مریم-محرمانه'), false);
+  assert.equal(raw.includes('09121112233'), false);
+  assert.equal(raw.includes('یادداشت-محرمانه'), false);
+
+  LS.testing.reset();
+  const { st, target: again } = await startWith(storage);
+  assert.equal(st.ready, true);
+  assert.equal(again.customers[0].name, 'مریم-محرمانه');
+  assert.equal(again.customers[0].note, 'یادداشت-محرمانه');
+});
+
+test('مهاجرت: داده‌ی ساده‌ی قدیمی رمز می‌شود و نسخه‌ی ساده فقط بعد از تأیید حذف می‌شود', async () => {
+  const storage = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('مشتری-قدیمی')) });
+  const { st, target } = await startWith(storage);
+  assert.equal(st.ready, true);
+  assert.equal(st.migrationPending, false);
+  assert.equal(target.customers[0].name, 'مشتری-قدیمی', 'همه‌ی رکوردها حفظ می‌شوند');
+  assert.equal(storage.map.has(V2_KEY), false, 'نسخه‌ی ساده پس از تأیید حذف شد');
+  assert.equal(storage.map.get(V3_KEY).includes('مشتری-قدیمی'), false);
+
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].note, 'یادداشت-مشتری-قدیمی', 'داده‌ی کامل بعد از راه‌اندازی دوباره');
+});
+
+test('مهاجرت با خطای نوشتن: نسخه‌ی ساده دست‌نخورده می‌ماند و داده در حافظه هست', async () => {
+  const storage = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('ایمن-بماند')) });
+  const realSet = storage.setItem;
+  storage.setItem = (k, v) => { if (k === V3_KEY) throw new Error('quota'); return realSet(k, v); };
+  const { st, target } = await startWith(storage);
+  assert.equal(st.ready, true);
+  assert.equal(st.migrationPending, true);
+  assert.equal(target.customers[0].name, 'ایمن-بماند');
+  assert.ok(storage.map.has(V2_KEY), 'نسخه‌ی ساده نباید حذف شود');
+  assert.equal(storage.map.has(V3_KEY), false);
+});
+
+test('نسخه‌ی ساده‌ی یکسان با رمزشده حذف می‌شود؛ نسخه‌ی متفاوت دست‌نخورده می‌ماند', async () => {
+  // حالت ۱: نسخه‌ی ساده‌ی یکسان بعد از مهاجرت می‌ماند و در راه‌اندازی بعدی حذف می‌شود
+  const same = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('یکسان')) });
+  await startWith(same);
+  assert.equal(same.map.has(V2_KEY), false);
+  same.map.set(V2_KEY, JSON.stringify(legacyState('یکسان')));
+  LS.testing.reset();
+  const again = await startWith(same);
+  assert.equal(again.st.staleLegacy, false);
+  assert.equal(same.map.has(V2_KEY), false, 'نسخه‌ی یکسان حذف می‌شود');
+
+  // حالت ۲: یک زبانه‌ی قدیمی نسخه‌ی ساده‌ی متفاوتی نوشته؛ هشدار و دست‌نخورده
+  const storage2 = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('اول')) });
+  await startWith(storage2);
+  storage2.map.set(V2_KEY, JSON.stringify(legacyState('متفاوت')));
+  LS.testing.reset();
+  const st = (await startWith(storage2)).st;
+  assert.equal(st.staleLegacy, true, 'نسخه‌ی ساده‌ی متفاوت هشدار می‌دهد');
+  assert.ok(storage2.map.has(V2_KEY), 'و دست‌نخورده می‌ماند');
+});
+
+test('کلید گم شده با پاکت رمزشده: قفل، بدون نوشتن و بدون بازنویسی', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'قفل-شده', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  const before = storage.map.get(V3_KEY);
+
+  LS.testing.dropKey();
+  LS.testing.reset();
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'key_missing');
+  assert.equal(LS.save({ customers: [] }), false, 'نوشتن در حالت قفل انجام نمی‌شود');
+  await LS.flush();
+  assert.equal(storage.map.get(V3_KEY), before, 'پاکت دست‌نخورده است');
+});
+
+test('کلید گم شده: کلید تازه ساخته نمی‌شود (پاکت باقی مانده)', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  LS.save(target); await LS.flush();
+  LS.testing.dropKey();
+  LS.testing.reset();
+  await startWith(storage);
+  assert.equal(LS.getStatus().locked, true);
+  // هیچ کلید تازه‌ای نباید ساخته شده باشد؛ تلاش برای نوشتن با پاکت باقی‌مانده هم رد می‌شود
+  assert.equal(LS.save(target), false);
+});
+
+test('پاکت دستکاری‌شده: رمزگشایی شکست می‌خورد و قفل می‌شود', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'سالم', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  const env = JSON.parse(storage.map.get(V3_KEY));
+  const bytes = Buffer.from(env.ct, 'base64');
+  bytes[0] ^= 0xff;
+  env.ct = bytes.toString('base64');
+  storage.map.set(V3_KEY, JSON.stringify(env));
+  LS.testing.reset();
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'decrypt_failed');
+});
+
+test('پاکت خراب: قفل با دلیل corrupt و امکان حذف', async () => {
+  const storage = fakeStorage({ [V3_KEY]: '{خراب' });
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'corrupt');
+  await LS.deleteUnreadable();
+  assert.equal(storage.map.has(V3_KEY), false);
+});
+
+test('حذف فقط داده‌ی ناخوانا: داده‌ی قابل‌خواندن و نسخه‌ی ساده حذف نمی‌شوند', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  LS.save(target); await LS.flush();
+  // داده‌ی قابل‌خواندن: حذف باید رد شود
+  LS.testing.reset();
+  await startWith(storage);
+  await assert.rejects(() => LS.deleteUnreadable(), /قابل‌خواندن/);
+  assert.equal(storage.map.has(V3_KEY), true, 'داده‌ی قابل‌خواندن نباید حذف شود');
+});
+
+test('حذف پاکت ناخوانا دست‌نخورده‌ی نسخه‌ی ساده‌ی قدیمی را نگه می‌دارد', async () => {
+  const storage = fakeStorage({ [V3_KEY]: '{خراب', [V2_KEY]: JSON.stringify(legacyState('ساده-بماند')) });
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  await LS.deleteUnreadable();
+  assert.equal(storage.map.has(V3_KEY), false);
+  assert.ok(storage.map.has(V2_KEY), 'نسخه‌ی ساده نباید حذف شود');
+
+  // بعد از حذف، راه‌اندازی دوباره داده‌ی ساده را مهاجرت می‌دهد
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.st.ready, true);
+  assert.equal(again.target.customers[0].name, 'ساده-بماند');
+});
+
+test('readPlain: رمزشده را باز می‌کند، ساده را می‌خواند و در حالت قفل null می‌دهد', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'برای-انتقال', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  assert.equal((await LS.readPlain()).customers[0].name, 'برای-انتقال');
+
+  LS.testing.dropKey();
+  assert.equal(await LS.readPlain(), null, 'بدون کلید چیزی برای انتقال نیست');
+
+  const plain = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('ساده-انتقال')) });
+  LS.testing.reset();
+  await startWith(fakeStorage());
+  const storage2 = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('ساده-انتقال')) });
+  LS.testing.reset();
+  // راه‌اندازی بدون مهاجرت (target=null) فقط برای خواندن
+  await LS.init({ storage: storage2, target: null, seed });
+  assert.equal((await LS.readPlain()).customers[0].name, 'ساده-انتقال');
+});
+
+test('نوشتن‌های پشت‌سرهم: ترتیب حفظ می‌شود و آخرین حالت ذخیره می‌شود', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  for (let i = 0; i < 25; i += 1) {
+    target.customers = [{ name: 'تغییر-' + i, phone: '', note: '' }];
+    LS.save(target);
+  }
+  await LS.flush();
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'تغییر-24');
+});
+
+test('قبل از راه‌اندازی نوشتن انجام نمی‌شود', () => {
+  LS.testing.reset();
+  assert.equal(LS.save({ customers: [] }), false);
+  assert.equal(LS.isReady(), false);
+});
+
+test('خطای IndexedDB هنگام راه‌اندازی: قفل با دلیل vault_unavailable، پاکت دست‌نخورده و بدون امکان حذف', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'سالم-نجات', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  const sealed = storage.map.get(V3_KEY);
+
+  LS.testing.reset();
+  LS.testing.setVaultFailure(true);
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'vault_unavailable', 'خطای دسترسی کلید «کلید گم شده» نیست');
+  assert.equal(storage.map.get(V3_KEY), sealed, 'پاکت سالم دست‌نخورده است');
+  await assert.rejects(() => LS.deleteUnreadable(), /هیچ‌چیز حذف نشد/);
+  assert.equal(storage.map.get(V3_KEY), sealed, 'حذف در خطای موقت انجام نشد');
+
+  // بعد از برگشت دسترسی، داده همان است که بود
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.st.locked, false);
+  assert.equal(again.target.customers[0].name, 'سالم-نجات');
+});
+
+test('خطای IndexedDB هنگام نوشتن: هیچ پاکتی بدون کلید پایدار نوشته نمی‌شود و بعد از برگشت دسترسی ذخیره می‌شود', async () => {
+  const storage = fakeStorage();
+  let errors = 0;
+  await LS.init({ storage, target: {}, seed, onError: () => { errors += 1; } });
+  LS.testing.setVaultFailure(true);
+  const state = seed();
+  state.customers = [{ name: 'در-زمان-خطا', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  assert.equal(errors, 1, 'خطا گزارش شد');
+  assert.equal(storage.map.get(V3_KEY), undefined, 'بدون کلید پایدار، پاکت با کلید موقت نوشته نمی‌شود');
+
+  LS.testing.setVaultFailure(false);
+  LS.save(state); await LS.flush();
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'در-زمان-خطا');
+});
+
+/* ---------- حالت فقط‌نشست (بدون IndexedDB) ---------- */
+
+test('بدون IndexedDB: حالت فقط‌نشست؛ هیچ پاکتی نوشته نمی‌شود و داده در همان صفحه کار می‌کند', async () => {
+  LS.testing.setVaultMode('none');
+  const storage = fakeStorage();
+  const { st, target } = await startWith(storage);
+  assert.equal(st.ready, true);
+  assert.equal(st.persistent, false);
+  assert.equal(st.sessionOnly, true);
+  target.customers = [{ name: 'فقط-این-صفحه', phone: '', note: '' }];
+  assert.equal(LS.save(target), true, 'تغییر در حافظه‌ی صفحه پذیرفته می‌شود');
+  await LS.flush();
+  assert.equal(storage.map.has(V3_KEY), false, 'هیچ پاکت رمزشده‌ای نوشته نشده');
+  assert.equal(storage.map.has(V2_KEY), false, 'و هیچ نسخه‌ی ساده‌ای ساخته نشده');
+  assert.equal(LS.getStatus().sessionDirty, true, 'تغییر بدون ذخیره‌ی دائمی ثبت شده');
+});
+
+test('بدون IndexedDB و با نسخه‌ی ساده‌ی قدیمی: داده خوانده می‌شود، v2 دست‌نخورده می‌ماند', async () => {
+  LS.testing.setVaultMode('none');
+  const storage = fakeStorage({ [V2_KEY]: JSON.stringify(legacyState('قدیمی-بماند')) });
+  const { st, target } = await startWith(storage);
+  assert.equal(target.customers[0].name, 'قدیمی-بماند');
+  assert.equal(st.legacyKept, true);
+  target.customers = [];
+  LS.save(target); await LS.flush();
+  assert.equal(storage.map.get(V2_KEY), JSON.stringify(legacyState('قدیمی-بماند')), 'نسخه‌ی ساده تغییر نکرده');
+  assert.equal(storage.map.has(V3_KEY), false);
+});
+
+test('بدون IndexedDB و با پاکت رمزشده: قفل بدون امکان حذف و بدون تغییر', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'سالم', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  const sealed = storage.map.get(V3_KEY);
+
+  LS.testing.reset();
+  LS.testing.setVaultMode('none');
+  const st = (await startWith(storage)).st;
+  assert.equal(st.locked, true);
+  assert.equal(st.reason, 'no_vault');
+  await assert.rejects(() => LS.deleteUnreadable(), /هیچ‌چیز حذف نشد/);
+  assert.equal(storage.map.get(V3_KEY), sealed);
+});
+
+/* ---------- بازیابی داده‌ی نسخه‌ی قدیمی ---------- */
+
+// وضعیت واقعی: داده‌ی جدیدتر رمزشده است و یک زبانه‌ی قدیمی بعد از مهاجرت یک نسخه‌ی ساده نوشته است
+async function staleScenario() {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'جدید-رمزشده', phone: '09120000001', note: 'جدیدترین' }];
+  target.orders = [{ id: 'o1', customer: 'جدید-رمزشده' }];
+  LS.save(target); await LS.flush();
+  const newer = storage.map.get(V3_KEY);
+  storage.map.set(V2_KEY, JSON.stringify(legacyState('قدیمی-از-زبانه')));
+  LS.testing.reset();
+  const again = await startWith(storage);
+  return { storage, target: again.target, st: again.st, newer };
+}
+
+test('پنل بازیابی: شمارش داده‌ی فعلی و نسخه‌ی قدیمی را نشان می‌دهد و چیزی را تغییر نمی‌دهد', async () => {
+  const { storage, newer } = await staleScenario();
+  const info = LS.recoveryInfo();
+  assert.equal(info.legacyPresent, true);
+  assert.deepEqual(info.currentCounts, { customers: 1, orders: 1, staff: 0, transactions: 0 });
+  assert.deepEqual(info.legacyCounts, { customers: 1, orders: 0, staff: 0, transactions: 0 });
+  assert.equal(info.backupExists, false);
+  assert.equal(storage.map.get(V3_KEY), newer);
+});
+
+test('ورود داده‌ی قدیمی: داده‌ی جدیدتر پیش از هر تغییری در پشتیبان رمزشده می‌ماند و هیچ‌چیز حذف نمی‌شود', async () => {
+  const { storage, target, newer } = await staleScenario();
+  const counts = await LS.importLegacy();
+  assert.deepEqual(counts, { customers: 1, orders: 0, staff: 0, transactions: 0 });
+  assert.equal(target.customers[0].name, 'قدیمی-از-زبانه');
+  assert.equal(storage.map.has(V2_KEY), false, 'نسخه‌ی ساده فقط بعد از تأیید حذف شد');
+  assert.ok(storage.map.get(BACKUP_KEY), 'پشتیبان داده‌ی جدیدتر وجود دارد');
+  assert.equal(storage.map.get(BACKUP_KEY).includes('جدید-رمزشده'), false, 'پشتیبان رمزشده است');
+  assert.notEqual(storage.map.get(V3_KEY), newer, 'داده‌ی اصلی جایگزین شده');
+
+  // داده‌ی جدیدتر از پشتیبان قابل بازیابی است
+  const bak = JSON.parse(await LS.testing.openAny(storage.map.get(BACKUP_KEY), 'dokhtyar.local.backup'));
+  assert.equal(bak.customers[0].name, 'جدید-رمزشده');
+  assert.equal(bak.orders.length, 1, 'سفارش جدیدتر هم در پشتیبان است');
+});
+
+test('ورود داده‌ی قدیمی: با وجود پشتیبان قبلی انجام نمی‌شود و هیچ‌چیز تغییر نمی‌کند', async () => {
+  const { storage, target } = await staleScenario();
+  await LS.importLegacy();
+  // دوباره یک نسخه‌ی ساده‌ی تازه می‌گذاریم
+  storage.map.set(V2_KEY, JSON.stringify(legacyState('سومی')));
+  const v3 = storage.map.get(V3_KEY), bak = storage.map.get(BACKUP_KEY);
+  await assert.rejects(() => LS.importLegacy(), /پشتیبان قبلی/);
+  assert.equal(storage.map.get(V3_KEY), v3);
+  assert.equal(storage.map.get(BACKUP_KEY), bak);
+  assert.equal(target.customers[0].name, 'قدیمی-از-زبانه');
+});
+
+test('ورود داده‌ی قدیمی: اگر پشتیبان تأیید نشود، داده‌ی فعلی و نسخه‌ی ساده دست‌نخورده می‌مانند', async () => {
+  const { storage, target, newer } = await staleScenario();
+  const v2 = storage.map.get(V2_KEY);
+  const realSet = storage.setItem;
+  storage.setItem = (k, v) => realSet(k, k === BACKUP_KEY ? 'خراب' : v);
+  await assert.rejects(() => LS.importLegacy(), /دست‌نخورده/);
+  storage.setItem = realSet;
+  assert.equal(storage.map.get(V3_KEY), newer, 'داده‌ی فعلی همان است');
+  assert.equal(storage.map.has(BACKUP_KEY), false, 'پشتیبان ناقص پاک شد');
+  assert.equal(storage.map.get(V2_KEY), v2, 'نسخه‌ی ساده مانده');
+  assert.equal(target.customers[0].name, 'جدید-رمزشده');
+});
+
+test('ورود داده‌ی قدیمی: اگر نوشتن داده‌ی جدید شکست بخورد، برگشت کامل انجام می‌شود', async () => {
+  const { storage, target, newer } = await staleScenario();
+  const v2 = storage.map.get(V2_KEY);
+  const realSet = storage.setItem;
+  let v3Writes = 0;
+  storage.setItem = (k, v) => {
+    if (k === V3_KEY && v3Writes++ === 0) throw new Error('quota');
+    return realSet(k, v);
+  };
+  await assert.rejects(() => LS.importLegacy(), /دست‌نخورده/);
+  storage.setItem = realSet;
+  assert.equal(storage.map.get(V3_KEY), newer);
+  assert.equal(storage.map.has(BACKUP_KEY), false);
+  assert.equal(storage.map.get(V2_KEY), v2);
+  assert.equal(target.customers[0].name, 'جدید-رمزشده');
+});
+
+test('ورود داده‌ی قدیمی: نوشتن‌های در انتظار قبل از بازیابی ذخیره می‌شوند و در پشتیبان هستند', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  // یک زبانه‌ی قدیمی بعد از راه‌اندازی نسخه‌ی ساده نوشته است
+  storage.map.set(V2_KEY, JSON.stringify(legacyState('ورود-بعد-از-تغییر')));
+  // تغییری که هنوز ذخیره نشده
+  target.customers = [{ name: 'تازه-در-انتظار', phone: '', note: '' }];
+  LS.save(target);
+  await LS.importLegacy();
+  const bak = JSON.parse(await LS.testing.openAny(storage.map.get(BACKUP_KEY), 'dokhtyar.local.backup'));
+  assert.equal(bak.customers[0].name, 'تازه-در-انتظار', 'تغییر در انتظار در پشتیبان ماند');
+});
+
+test('جابه‌جایی: بازگشت به داده‌ی جدیدتر و دوباره به قدیمی؛ هیچ‌چیز حذف نمی‌شود', async () => {
+  const { storage, target } = await staleScenario();
+  await LS.importLegacy();
+  const after = await LS.swapWithBackup();
+  assert.deepEqual(after, { customers: 1, orders: 1, staff: 0, transactions: 0 });
+  assert.equal(target.customers[0].name, 'جدید-رمزشده');
+  assert.ok(storage.map.get(BACKUP_KEY), 'پشتیبان هنوز هست');
+  await LS.swapWithBackup();
+  assert.equal(target.customers[0].name, 'قدیمی-از-زبانه', 'جابه‌جایی دوباره برگرداند');
+
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'قدیمی-از-زبانه', 'بعد از بارگذاری هم درست است');
+});
+
+test('جابه‌جایی بدون پشتیبان: خطا و هیچ تغییری', async () => {
+  const storage = fakeStorage();
+  await startWith(storage);
+  await assert.rejects(() => LS.swapWithBackup(), /پشتیبانی برای جابه‌جایی/);
+});

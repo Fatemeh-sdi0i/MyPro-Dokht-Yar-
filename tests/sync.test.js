@@ -491,3 +491,59 @@ test('کلید گم شده: داده حذف نمی‌شود، کلید تازه 
   await Sync.beginSession(user());
   assert.equal(await Sync.lastScope(), null, 'نشانه‌ی آخرین کاربر خوانا نیست، پس بوت آفلاین بی‌خطر است');
 });
+
+test('حذف موارد ناخوانا: فقط ردیف‌های ناخوانای کاربر فعلی؛ کاربر دیگر دست‌نخورده', async () => {
+  Sync.testing.resetAll();
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'الف-حذف' });
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'ب-حذف' });
+  const v = user();
+  await Sync.beginSession(v);
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'ج-نگه' });
+
+  await Sync.testing.dropDeviceKey();
+  await Sync.beginSession(u);
+  const before = await Sync.localDataStatus();
+  assert.equal(before.unreadableMine, 2, 'دو ردیف ناخوانای کاربر فعلی');
+
+  // دو ردیف صف کاربر فعلی + نشانگر «آخرین ورود» (فقط اشاره‌گر، نه داده‌ی کاربر)
+  const removed = await Sync.deleteUnreadable();
+  assert.equal(removed, 3, 'دو ردیف صف کاربر فعلی و نشانگر ناخوانای last حذف شد');
+  const cacheLeft = await Sync.testing.rawAll('cache');
+  assert.equal(cacheLeft.length, 0, 'نشانگر last حذف شده است');
+
+  const rows = await Sync.testing.rawAll('queue');
+  assert.equal(rows.filter((r) => r.scope === u).length, 0, 'ردیف‌های کاربر فعلی حذف شدند');
+  assert.equal(rows.filter((r) => r.scope === v).length, 1, 'ردیف کاربر دیگر مانده است');
+
+  // تا وقتی ردیف ناخوانای کاربر دیگر هست، نوشتن جدید مسدود است و کلید تازه ساخته نمی‌شود
+  const status = await Sync.localDataStatus();
+  assert.equal(status.unreadableMine, 0);
+  assert.ok(status.unreadable >= 1);
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await assert.rejects(() => Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'تازه' }),
+    (err) => Sync.isLocalDataError(err));
+});
+
+test('خطای IndexedDB داده‌ی سالم را ناخوانا یا حذف‌پذیر نمی‌کند', async () => {
+  Sync.testing.resetAll();
+  reset();
+  const u = user();
+  await Sync.beginSession(u);
+  responder = () => { throw netErr(); };
+  await Sync.send('POST', '/customers', { id: Sync.uuid(), name: 'سالم-بماند' });
+  const before = await Sync.testing.rawAll('queue');
+
+  Sync.testing.setVaultFailure(true);
+  await assert.rejects(() => Sync.deleteUnreadable());
+  Sync.testing.setVaultFailure(false);
+
+  const after = await Sync.testing.rawAll('queue');
+  assert.deepEqual(after, before, 'ردیف‌ها دست‌نخورده‌اند');
+  const st = await Sync.localDataStatus();
+  assert.equal(st.unreadableMine, 0, 'خطای موقت به‌عنوان داده‌ی ناخوانا شمرده نمی‌شود');
+});
