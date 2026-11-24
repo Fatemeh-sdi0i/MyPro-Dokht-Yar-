@@ -83,9 +83,9 @@ test('پیش از جایگزینی نسخه‌ی کامل ذخیره می‌شو
   const list = (await call('GET', '/api/v1/import/snapshots')).json().items;
   assert.ok(list.some((s) => s.id === snapId), 'نسخه در فهرست است');
   const snap = (await call('GET', `/api/v1/import/snapshots/${snapId}`)).json();
-  const { exported_at, status_log, ...snapRest } = snap;
+  const { exported_at, ...snapRest } = snap;
   assert.deepEqual(snapRest, pre, 'نسخه‌ی ذخیره‌شده دقیقاً وضعیت پیش از بازگردانی است');
-  assert.ok(Array.isArray(status_log) && status_log.length >= 1, 'تاریخچه‌ی وضعیت در نسخه است');
+  assert.ok(Array.isArray(snap.status_log) && snap.status_log.length >= 1, 'تاریخچه‌ی وضعیت در نسخه است');
 
   // بازگردانی همان نسخه، وضعیت پیش از بازگردانی را برمی‌گرداند
   const undo = await call('POST', '/api/v1/import/replace', snap);
@@ -111,7 +111,9 @@ test('فایل ناقص یا ناسازگار: 400 و هیچ داده‌ای ت�
   badOrder.orders[0].price = -5;
   assert.equal((await call('POST', '/api/v1/import/replace', badOrder)).statusCode, 400);
 
-  assert.equal((await call('POST', '/api/v1/import/replace', 'متن-نه-شیء')).statusCode, 400);
+  // بدنه‌ی JSON غیرشیء (رشته) باید با 400 رد شود
+  const scalar = await app.inject({ method: 'POST', url: '/api/v1/import/replace', payload: '"متن-نه-شیء"', headers: { cookie, 'content-type': 'application/json' } });
+  assert.equal(scalar.statusCode, 400);
 
   assert.deepEqual(await state(), good, 'هیچ‌کدام از فایل‌های نامعتبر داده را تغییر نداد');
   assert.equal((await call('GET', '/api/v1/import/snapshots')).json().items.length, snapsBefore, 'برای فایل نامعتبر نسخه‌ی تازه ساخته نشد');
