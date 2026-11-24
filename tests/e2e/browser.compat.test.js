@@ -58,7 +58,7 @@ async function open(ctx) {
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("dialog", (d) => d.accept());
   await page.goto(base + "/index.html");
-  await waitFor(() => page.evaluate(() => document.readyState === "complete"), "بارگذاری");
+  await waitFor(() => page.evaluate(() => document.body.dataset.ready === "true"), "آماده شدن برنامه");
   return { page, errors };
 }
 

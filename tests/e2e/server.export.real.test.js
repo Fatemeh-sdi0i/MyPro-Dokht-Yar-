@@ -13,8 +13,10 @@ const EMAIL = process.env.E2E_EMAIL;
 const PASSWORD = process.env.E2E_PASSWORD;
 const SKIP = !EMAIL || !PASSWORD ? "E2E_EMAIL و E2E_PASSWORD لازم است" : false;
 const PASS = "گذرواژه-سرور-واقعی-۱۲۳";
-const CUSTOMER = "مشتری-اکسپورت-واقعی";
-const PHONE = "09121230000";
+// هر اجرا نام و شماره‌ی تازه دارد: شماره در هر مزون یکتا است و تکرار، ثبت را رد می‌کند
+const RUN = String(Date.now()).slice(-7);
+const CUSTOMER = "مشتری-اکسپورت-" + RUN + Math.random().toString(36).slice(2, 6);
+const PHONE = "0912" + RUN;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dokhtyar-realexport-"));
 
 let browser;

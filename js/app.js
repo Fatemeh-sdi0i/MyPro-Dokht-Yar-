@@ -1343,6 +1343,7 @@ async function bootLocal() {
     onError: () => toast(STORE_ERROR_MSG),
   });
   bindEvents();
+  document.body.dataset.ready = "true"; // رویدادها فعال شده‌اند؛ پیش از این کلیک‌ها نادیده گرفته می‌شوند
   // اگر نوشتنی هنوز به localStorage نرسیده، یا تغییری فقط در حالت فقط‌نشست مانده، بستن صفحه از بین می‌رود؛ مرورگر تأیید می‌خواهد
   window.addEventListener("beforeunload", (e) => {
     if (LocalStore.pendingCount() > 0 || LocalStore.getStatus().sessionDirty) {
@@ -1470,6 +1471,7 @@ async function boot() {
     return;
   }
   bindEvents();
+  document.body.dataset.ready = "true";
   // حالت سرور: داده‌ی محلی برای انتقال نگه داشته می‌شود و نمایش داده نمی‌شود.
   // مهاجرت ساده→رمزشده همین‌جا هم انجام می‌شود (بدون اعمال روی state).
   await LocalStore.init({ storage: localStorage, target: null, seed: cloneSeed, onError: () => {} }).catch(() => {});
