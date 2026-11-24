@@ -62,7 +62,7 @@ async function open(ctx) {
   return { page, errors };
 }
 
-test(`[${ENGINE}] ذخیره‌ی رمزشده پس از بارگذاری مجدد خوانده می‌شود`, async () => {
+test(`[${ENGINE}] ذخیره‌ی رمزشده پس از بارگذاری مجدد؛ یا حالت فقط‌نشست با هشدار اگر مرورگر کلید را نگه ندارد`, async (t) => {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "allow" });
   contexts.push(ctx);
   const { page, errors } = await open(ctx);
@@ -72,17 +72,30 @@ test(`[${ENGINE}] ذخیره‌ی رمزشده پس از بارگذاری مجد
   await page.fill("#customerForm input[name=phone]", PHONE);
   await page.click("#customerForm button[type=submit]");
   await waitFor(() => page.evaluate((n) => (document.querySelector("#customersBody")?.textContent || "").includes(n), CUSTOMER), "نمایش مشتری");
-  await waitFor(() => page.evaluate(() => localStorage.getItem("dokhtyar.v3") !== null), "نوشتن رمزشده");
+  // نتیجه‌ی واقعی مرورگر: یا کلید پایدار است و داده رمزشده نوشته می‌شود، یا حالت فقط‌نشست با هشدار
+  await waitFor(() => page.evaluate(() => LocalStore.getStatus().sessionOnly === true || localStorage.getItem("dokhtyar.v3") !== null), "نتیجه‌ی ذخیره");
 
-  const stored = await page.evaluate(() => localStorage.getItem("dokhtyar.v3"));
-  assert.equal(stored.includes(CUSTOMER), false, "نام مشتری به‌صورت متن ساده ذخیره نمی‌شود");
-  assert.equal(stored.includes(PHONE), false, "شماره‌ی تماس به‌صورت متن ساده ذخیره نمی‌شود");
+  const outcome = await page.evaluate(() => ({
+    sessionOnly: LocalStore.getStatus().sessionOnly === true,
+    reason: LocalStore.getStatus().reason,
+    banner: !document.querySelector("#sessionBanner").hidden,
+    stored: localStorage.getItem("dokhtyar.v3"),
+  }));
 
-  // بارگذاری مجدد: کلید از IndexedDB خوانده و داده رمزگشایی می‌شود
-  await page.reload();
-  await waitFor(() => page.evaluate(() => document.readyState === "complete"), "بارگذاری مجدد");
-  await page.click('.nav-item[data-page="customers"]');
-  await waitFor(() => page.evaluate((n) => (document.querySelector("#customersBody")?.textContent || "").includes(n), CUSTOMER), "ماندگاری مشتری پس از بارگذاری مجدد");
+  if (outcome.sessionOnly) {
+    // این مرورگر کلید غیرقابل استخراج را در IndexedDB نگه نمی‌دارد: هیچ‌چیز روی دیسک نمی‌رود و هشدار دیده می‌شود
+    t.diagnostic(`${ENGINE}: کلید در IndexedDB نگهداری نمی‌شود (${outcome.reason || "فقط‌نشست"}). حالت فقط‌نشست فعال شد.`);
+    assert.equal(outcome.stored, null, "در حالت فقط‌نشست هیچ پاکت رمزشده‌ای نوشته نمی‌شود");
+    assert.equal(outcome.banner, true, "هشدار حالت فقط‌نشست نمایش داده می‌شود");
+  } else {
+    assert.equal(outcome.stored.includes(CUSTOMER), false, "نام مشتری به‌صورت متن ساده ذخیره نمی‌شود");
+    assert.equal(outcome.stored.includes(PHONE), false, "شماره‌ی تماس به‌صورت متن ساده ذخیره نمی‌شود");
+    // بارگذاری مجدد: کلید از IndexedDB خوانده و داده رمزگشایی می‌شود
+    await page.reload();
+    await waitFor(() => page.evaluate(() => document.body.dataset.ready === "true"), "بارگذاری مجدد");
+    await page.click('.nav-item[data-page="customers"]');
+    await waitFor(() => page.evaluate((n) => (document.querySelector("#customersBody")?.textContent || "").includes(n), CUSTOMER), "ماندگاری مشتری پس از بارگذاری مجدد");
+  }
   assert.deepEqual(errors, []);
 });
 
@@ -106,5 +119,30 @@ test(`[${ENGINE}] پشتیبان رمزشده با گذرواژه‌ی درست 
   }, text);
   assert.equal(result.kind, "local");
   assert.equal(result.bad, "decrypt_failed");
+  assert.deepEqual(errors, []);
+});
+
+// دترمینیستیک: مرورگری که کلید را نمی‌تواند در IndexedDB بنویسد (DataCloneError) نباید معلق بماند یا خطای تکراری بدهد
+test(`[${ENGINE}] اگر کلید در IndexedDB ذخیره نشود، حالت فقط‌نشست فعال می‌شود و نوشتن معلق نمی‌ماند`, async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "allow" });
+  contexts.push(ctx);
+  await ctx.addInitScript(() => {
+    const realPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+      if (this.name === "keys") throw new DOMException("The object can not be cloned.", "DataCloneError");
+      return realPut.apply(this, args);
+    };
+  });
+  const { page, errors } = await open(ctx);
+  await waitFor(() => page.evaluate(() => LocalStore.getStatus().sessionOnly === true), "حالت فقط‌نشست");
+  await page.click('.nav-item[data-page="customers"]');
+  await page.click("#addCustomerBtn");
+  await page.fill("#customerForm input[name=name]", CUSTOMER);
+  await page.fill("#customerForm input[name=phone]", PHONE);
+  await page.click("#customerForm button[type=submit]");
+  await waitFor(() => page.evaluate((n) => (document.querySelector("#customersBody")?.textContent || "").includes(n), CUSTOMER), "نمایش مشتری در حافظه");
+  assert.equal(await page.evaluate(() => localStorage.getItem("dokhtyar.v3")), null, "هیچ پاکتی روی دیسک نیست");
+  assert.equal(await page.evaluate(() => !document.querySelector("#sessionBanner").hidden), true, "هشدار دیده می‌شود");
+  assert.equal(await page.evaluate(() => LocalStore.pendingCount()), 0, "نوشتنی معلق نمانده است");
   assert.deepEqual(errors, []);
 });

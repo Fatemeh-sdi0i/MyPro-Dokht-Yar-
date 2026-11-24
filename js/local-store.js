@@ -122,8 +122,16 @@
       let existing = null;
       const g = s.get(KEY_ID);
       g.onsuccess = () => {
-        existing = g.result || null;
-        if (!existing) s.put({ id: KEY_ID, key, createdAt: Date.now() });
+        // put ممکن است خطای همگام بدهد (مثلاً مرورگری که کلید غیرقابل استخراج را نمی‌تواند ذخیره کند)؛
+        // باید به‌صورت خطای قابل‌گزارش به Promise برسد، وگرنه نوشتن برای همیشه معلق می‌ماند
+        try {
+          existing = g.result || null;
+          if (!existing) s.put({ id: KEY_ID, key, createdAt: Date.now() });
+        } catch (err) {
+          try { tx.abort(); } catch (e) { /* تراکنش پیش‌تر بسته شده */ }
+          db.close();
+          reject(err);
+        }
       };
       tx.oncomplete = () => { db.close(); resolve(existing ? existing.key : key); };
       tx.onerror = () => { db.close(); reject(tx.error); };
@@ -258,7 +266,14 @@
     apply(seedFn());
     status.ready = true;
     // کلید را پیش از اولین نوشتن می‌سازیم تا پنجره‌ی ناامن کوتاه بماند (ساخت کلید از IndexedDB کندتر است)
-    try { await getKey(true); } catch (err) { /* نوشتن بعدی خطا را گزارش می‌کند */ }
+    try {
+      await getKey(true);
+    } catch (err) {
+      // مرورگر کلید را نگه نمی‌دارد: حالت فقط‌نشست با هشدار، به‌جای خطای تکراری در هر نوشتن.
+      // هیچ پاکت یا نسخه‌ی ساده‌ای نوشته نمی‌شود، پس قاعده‌ی «بدون متن ساده‌ی دائمی» حفظ می‌شود.
+      keyCache = null;
+      status = { ...status, persistent: false, sessionOnly: true, reason: "key_unpersistable" };
+    }
     return status;
   }
 

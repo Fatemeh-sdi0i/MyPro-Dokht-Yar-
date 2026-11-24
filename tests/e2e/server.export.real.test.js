@@ -13,10 +13,9 @@ const EMAIL = process.env.E2E_EMAIL;
 const PASSWORD = process.env.E2E_PASSWORD;
 const SKIP = !EMAIL || !PASSWORD ? "E2E_EMAIL و E2E_PASSWORD لازم است" : false;
 const PASS = "گذرواژه-سرور-واقعی-۱۲۳";
-// هر اجرا نام و شماره‌ی تازه دارد: شماره در هر مزون یکتا است و تکرار، ثبت را رد می‌کند
-const RUN = String(Date.now()).slice(-7);
-const CUSTOMER = "مشتری-اکسپورت-" + RUN + Math.random().toString(36).slice(2, 6);
-const PHONE = "0912" + RUN;
+// هر نشست نام و شماره‌ی تازه دارد: شماره در هر مزون یکتا است و تکرار، ثبت را رد می‌کند
+let CUSTOMER = "";
+let PHONE = "";
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dokhtyar-realexport-"));
 
 let browser;
@@ -31,6 +30,9 @@ after(async () => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function openAsAdmin() {
+  const tag = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  CUSTOMER = "مشتری-اکسپورت-" + tag;
+  PHONE = "0912" + String(Math.floor(1000000 + Math.random() * 8999999));
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "allow" });
   contexts.push(ctx);
   await ctx.addInitScript(() => { window.DOKHTYAR_CONFIG = { remote: true, apiBase: "" }; });
