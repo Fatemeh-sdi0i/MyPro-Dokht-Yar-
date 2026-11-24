@@ -19,6 +19,8 @@
   const AAD = "dokhtyar.local.v3";
   const BACKUP_KEY = "dokhtyar.backup.v3"; // نسخه‌ی رمزشده‌ی داده‌ی جایگزین‌شده (هیچ‌وقت خودکار حذف نمی‌شود)
   const BACKUP_AAD = "dokhtyar.local.backup";
+  const SWAP_KEY = "dokhtyar.swap.v3"; // نسخه‌ی موقت داده‌ی فعلی در جابه‌جایی (فقط برای برگشت)
+  const SWAP_AAD = "dokhtyar.local.swap";
   const VAULT_CODES = ["vault_unavailable", "no_vault"];
   const UNREADABLE = ["key_missing", "decrypt_failed", "corrupt"];
 
@@ -37,7 +39,13 @@
   const DEFAULT_VAULT_MODE = root.indexedDB ? "idb" : (typeof window === "undefined" ? "memory" : "none");
   let vaultMode = DEFAULT_VAULT_MODE;
   let busyOps = 0; // عملیات بازیابی در صف؛ تا پایان آن نوشتن معمولی پذیرفته نمی‌شود
+  // وضعیت نوشتن برای نشانگر «در حال ذخیره / ذخیره شد». «ذخیره شد» فقط بعد از بازخوانی موفق ثبت می‌شود.
+  let listeners = new Set();
+  let lastSavedAt = null;
+  let lastError = null;
   let chain = Promise.resolve();
+  let pending = 0; // نوشتن‌هایی که هنوز به localStorage نرسیده‌اند
+  let generation = 0; // هر بارگذاری مجدد نسل تازه می‌سازد؛ نوشتن‌های صفِ نسل قبل دیگر انجام نمی‌شوند
   let status = freshStatus();
 
   function freshStatus() {
@@ -114,8 +122,16 @@
       let existing = null;
       const g = s.get(KEY_ID);
       g.onsuccess = () => {
-        existing = g.result || null;
-        if (!existing) s.put({ id: KEY_ID, key, createdAt: Date.now() });
+        // put ممکن است خطای همگام بدهد (مثلاً مرورگری که کلید غیرقابل استخراج را نمی‌تواند ذخیره کند)؛
+        // باید به‌صورت خطای قابل‌گزارش به Promise برسد، وگرنه نوشتن برای همیشه معلق می‌ماند
+        try {
+          existing = g.result || null;
+          if (!existing) s.put({ id: KEY_ID, key, createdAt: Date.now() });
+        } catch (err) {
+          try { tx.abort(); } catch (e) { /* تراکنش پیش‌تر بسته شده */ }
+          db.close();
+          reject(err);
+        }
       };
       tx.oncomplete = () => { db.close(); resolve(existing ? existing.key : key); };
       tx.onerror = () => { db.close(); reject(tx.error); };
@@ -249,6 +265,15 @@
 
     apply(seedFn());
     status.ready = true;
+    // کلید را پیش از اولین نوشتن می‌سازیم تا پنجره‌ی ناامن کوتاه بماند (ساخت کلید از IndexedDB کندتر است)
+    try {
+      await getKey(true);
+    } catch (err) {
+      // مرورگر کلید را نگه نمی‌دارد: حالت فقط‌نشست با هشدار، به‌جای خطای تکراری در هر نوشتن.
+      // هیچ پاکت یا نسخه‌ی ساده‌ای نوشته نمی‌شود، پس قاعده‌ی «بدون متن ساده‌ی دائمی» حفظ می‌شود.
+      keyCache = null;
+      status = { ...status, persistent: false, sessionOnly: true, reason: "key_unpersistable" };
+    }
     return status;
   }
 
@@ -261,18 +286,52 @@
     if (!isReady()) return false;
     if (busyOps > 0) return false; // بازیابی در صف است؛ نوشتن معمولی نباید بعد از آن داده‌ی قدیمی بنویسد
     if (!status.persistent) { status.sessionDirty = true; return true; } // حالت فقط‌نشست: چیزی نوشته نمی‌شود
+    // وضعیت در همین لحظه ثبت می‌شود؛ تغییرات بعدی نوشتن جدایی می‌سازند
     const text = JSON.stringify(state);
+    const myGen = generation;
+    pending += 1;
+    emit();
     chain = chain
       .then(async () => {
+        if (myGen !== generation) return; // صفحه‌ی قبلی بسته شده: نوشتن ناتمام نباید انجام شود
         const env = await seal(text);
-        storage.setItem(V3_KEY, env);
+        if (myGen !== generation) return;
+        storage.setItem(V3_KEY, env); // یک فراخوانی همزمان؛ یا کاملاً نوشته می‌شود یا اصلاً
         const back = await open(storage.getItem(V3_KEY));
         if (back !== text) throw new Error("بازخوانی پس از نوشتن تأیید نشد");
+        if (myGen === generation) { lastError = null; lastSavedAt = Date.now(); }
       })
-      .catch((err) => onError(err));
+      .catch((err) => {
+        if (myGen === generation) lastError = "ذخیره نشد: " + (err && err.message ? err.message : "خطای ناشناخته");
+        onError(err);
+      })
+      .finally(() => { if (myGen === generation) { pending -= 1; emit(); } });
     return true;
   }
 
+  // تعداد نوشتن‌های در انتظار؛ برای هشدار خروج از صفحه
+  function pendingCount() { return pending; }
+
+  function writeStatus() {
+    const state = !status.persistent ? "session"
+      : busyOps > 0 ? "busy"
+      : pending > 0 ? "saving"
+      : lastError ? "error"
+      : lastSavedAt ? "saved" : "idle";
+    return { state, pending, lastSavedAt, error: lastError };
+  }
+  function emit() {
+    const snapshot = writeStatus();
+    for (const fn of [...listeners]) {
+      try { fn(snapshot); } catch (err) { /* یک شنونده‌ی خراب نوشتن را متوقف نمی‌کند */ }
+    }
+  }
+  // فوراً وضعیت فعلی را می‌دهد و بعد از هر تغییر دوباره؛ تابع لغو اشتراک برمی‌گرداند
+  function subscribe(fn) {
+    listeners.add(fn);
+    fn(writeStatus());
+    return () => listeners.delete(fn);
+  }
   /* ---------- حالت فقط‌نشست (بدون IndexedDB) ---------- */
   // بدون IndexedDB کلید پایدار وجود ندارد، پس هیچ پاکتی نوشته نمی‌شود و داده فقط تا بستن صفحه می‌ماند.
   // نسخه‌ی ساده‌ی قدیمی (v2) فقط خوانده می‌شود و دست‌نخورده می‌ماند.
@@ -293,8 +352,12 @@
   // زنجیره‌ی نوشتن را دنبال می‌کند؛ تا پایان عملیات، نوشتن معمولی پذیرفته نمی‌شود
   function enqueue(fn) {
     busyOps += 1;
-    const run = chain.then(fn);
-    chain = run.catch(() => {}).then(() => { busyOps -= 1; });
+    emit();
+    // شمارنده پیش از برگشتن نتیجه به فراخواننده پایین می‌آید، پس وضعیت «بازیابی» نمی‌ماند
+    const run = chain.then(async () => {
+      try { return await fn(); } finally { busyOps -= 1; emit(); }
+    });
+    chain = run.catch(() => {});
     return run;
   }
 
@@ -316,6 +379,47 @@
 
   // داده‌ی نسخه‌ی قدیمی را جایگزین داده‌ی فعلی می‌کند، اما اول داده‌ی فعلی را رمزشده در پشتیبان نگه می‌دارد.
   // هیچ داده‌ای حذف نمی‌شود؛ اگر هر مرحله تأیید نشود، همه‌چیز به حالت قبل برمی‌گردد.
+  /**
+   * جایگزینی داده‌ی فعلی با clean. ترتیب: داده‌ی فعلی رمزشده در پشتیبان ← نوشتن داده‌ی جدید ← بازخوانی هر دو.
+   * هر شکست: v3 به مقدار قبلی برمی‌گردد و پشتیبان فقط وقتی حذف می‌شود که برگشت v3 موفق بوده است.
+   * اگر برگشت هم شکست بخورد، پشتیبان (داده‌ی فعلی) نگه داشته می‌شود و پیام صریح است.
+   * فراخواننده باید پیش از این بررسی کند که پشتیبان قبلی نیست و وضعیت persistent و آماده است.
+   */
+  async function replaceWithBackup(clean) {
+    const expected = JSON.stringify(clean);
+    const v3Before = storage.getItem(V3_KEY);
+    const currentText = v3Before === null ? null : await open(v3Before);
+    let backupWritten = false;
+    try {
+      if (currentText !== null) {
+        storage.setItem(BACKUP_KEY, await seal(currentText, BACKUP_AAD, false));
+        backupWritten = true;
+        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== currentText) throw new Error("بازخوانی پشتیبان تأیید نشد");
+      }
+      storage.setItem(V3_KEY, await seal(expected));
+      if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
+    } catch (err) {
+      try {
+        if (v3Before === null) storage.removeItem(V3_KEY);
+        else storage.setItem(V3_KEY, v3Before);
+        if (backupWritten) storage.removeItem(BACKUP_KEY);
+      } catch (rbErr) {
+        throw new Error("بازیابی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در پشتیبان نگه داشته شده است و نباید حذف شود (" + err.message + ")");
+      }
+      throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
+    }
+  }
+
+  // دلیل مسدود بودن بازگردانی یا null اگر آماده است
+  function restoreBlockedReason() {
+    if (!status.ready || status.locked) return "پایگاه داده‌ی محلی آماده نیست؛ بازگردانی انجام نمی‌شود.";
+    if (!status.persistent) return "در این حالت داده ذخیره‌ی دائمی ندارد؛ بازگردانی انجام نمی‌شود.";
+    if (storage.getItem(BACKUP_KEY) !== null) {
+      return "یک پشتیبان محافظت‌شده از قبل در این مرورگر هست و حذف نمی‌شود، پس بازگردانی دوم انجام نمی‌شود.";
+    }
+    return null;
+  }
+
   function importLegacy() {
     return enqueue(async () => {
       if (!status.ready || status.locked || !status.persistent) throw new Error("ورود داده‌ی قدیمی در این حالت ممکن نیست");
@@ -324,26 +428,30 @@
       if (storage.getItem(BACKUP_KEY) !== null) throw new Error("یک پشتیبان قبلی هست؛ ابتدا آن را بررسی یا جابه‌جا کنید");
       const legacy = tryParse(v2);
       if (!legacy) throw new Error("نسخه‌ی ساده‌ی قدیمی خراب است؛ دست‌نخورده مانده است");
+      if (storage.getItem(V3_KEY) === null) throw new Error("داده‌ی رمزشده‌ی فعلی وجود ندارد؛ بازیابی انجام نشد");
       const clean = sanitize(legacy);
-      const expected = JSON.stringify(clean);
-      const v3Before = storage.getItem(V3_KEY);
-      if (v3Before === null) throw new Error("داده‌ی رمزشده‌ی فعلی وجود ندارد؛ بازیابی انجام نشد");
-      const currentText = await open(v3Before);
-      let backupWritten = false;
-      try {
-        storage.setItem(BACKUP_KEY, await seal(currentText, BACKUP_AAD, false));
-        backupWritten = true;
-        if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== currentText) throw new Error("بازخوانی پشتیبان تأیید نشد");
-        storage.setItem(V3_KEY, await seal(expected));
-        if ((await open(storage.getItem(V3_KEY))) !== expected) throw new Error("بازخوانی داده‌ی بازیابی‌شده تأیید نشد");
-      } catch (err) {
-        storage.setItem(V3_KEY, v3Before);
-        if (backupWritten) storage.removeItem(BACKUP_KEY);
-        throw new Error("بازیابی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
-      }
+      await replaceWithBackup(clean);
       storage.removeItem(V2_KEY); // فقط بعد از تأیید هر دو نسخه
       apply(clean);
       status.staleLegacy = false;
+      lastError = null; lastSavedAt = Date.now();
+      return count(clean);
+    });
+  }
+
+  /**
+   * بازگردانی از فایل پشتیبان ساده یا رمزشده‌ای که فراخواننده خوانده و اعتبارسنجی کرده است.
+   * فقط وقتی پشتیبان محافظت‌شده نیست. داده‌ی فعلی به پشتیبان می‌رود و هیچ‌چیز حذف نمی‌شود.
+   */
+  function restoreBackup(parsedLocal) {
+    return enqueue(async () => {
+      const blocked = restoreBlockedReason();
+      if (blocked) throw new Error(blocked);
+      if (!parsedLocal || typeof parsedLocal !== "object") throw new Error("فایل پشتیبان نامعتبر است؛ چیزی تغییر نکرد");
+      const clean = sanitize(parsedLocal);
+      await replaceWithBackup(clean);
+      apply(clean);
+      lastError = null; lastSavedAt = Date.now();
       return count(clean);
     });
   }
@@ -360,17 +468,35 @@
       const restored = tryParse(bakText);
       if (!restored) throw new Error("پشتیبان خراب است؛ هیچ‌چیز تغییر نکرد");
       const clean = sanitize(restored);
+      // مرحله‌ها به‌گونه‌ای‌اند که هر دو داده همیشه در حداقل یک انبار باشند:
+      // ۱) داده‌ی فعلی به انبار موقت؛ ۲) اصلی ← پشتیبان؛ ۳) پشتیبان ← داده‌ی فعلی.
+      // برگشت: اول پشتیبان (که داده‌ی فعلی را هنوز در موقت دارد)، سپس اصلی. انبار موقت تا پایان حذف نمی‌شود.
+      // step: آخرین نوشتنی که شروع شده (پیش از بازخوانی تأیید)؛ برگشت باید همان را جبران کند
+      let step = 0;
       try {
+        storage.setItem(SWAP_KEY, await seal(curText, SWAP_AAD));
+        step = 1;
+        if ((await open(storage.getItem(SWAP_KEY), SWAP_AAD)) !== curText) throw new Error("بازخوانی تأیید نشد");
         storage.setItem(V3_KEY, await seal(bakText));
-        storage.setItem(BACKUP_KEY, await seal(curText, BACKUP_AAD, false));
+        step = 2;
         if ((await open(storage.getItem(V3_KEY))) !== bakText) throw new Error("بازخوانی تأیید نشد");
+        storage.setItem(BACKUP_KEY, await seal(curText, BACKUP_AAD, false));
+        step = 3;
         if ((await open(storage.getItem(BACKUP_KEY), BACKUP_AAD)) !== curText) throw new Error("بازخوانی تأیید نشد");
       } catch (err) {
-        storage.setItem(V3_KEY, curEnv);
-        storage.setItem(BACKUP_KEY, bak);
+        try {
+          if (step >= 3) storage.setItem(BACKUP_KEY, bak);
+          if (step >= 2) storage.setItem(V3_KEY, curEnv);
+          storage.removeItem(SWAP_KEY); // فقط وقتی همه‌ی داده‌ها در اصلی و پشتیبان برگشته‌اند
+        } catch (rbErr) {
+          throw new Error("جابه‌جایی انجام نشد و برگشت کامل نشد؛ داده‌ی فعلی در انبار موقت «" + SWAP_KEY + "» نگه داشته شده و نباید حذف شود (" + err.message + ")");
+        }
         throw new Error("جابه‌جایی انجام نشد و داده‌ی فعلی دست‌نخورده است (" + err.message + ")");
       }
+      // داده‌ها پیش‌تر تأیید شده‌اند؛ اگر پاک‌کردن انبار موقت نشد، نسخه‌ی اضافه‌ی داده‌ی فعلی می‌ماند و بی‌ضرر است
+      try { storage.removeItem(SWAP_KEY); } catch (e) { /* بی‌ضرر */ }
       apply(clean);
+      lastError = null; lastSavedAt = Date.now();
       return count(clean);
     });
   }
@@ -410,13 +536,17 @@
     setVaultFailure(on) { failVault = Boolean(on); keyCache = null; },
     setVaultMode(mode) { vaultMode = mode; },
     openAny: (env, aad) => open(env, aad), // فقط برای بررسی پشتیبان در آزمون‌ها
-    // شبیه‌سازی بارگذاری مجدد صفحه: کلید (که در IndexedDB است) می‌ماند، کش و صف نوشتن پاک می‌شود
-    reset() { keyCache = null; failVault = false; vaultMode = DEFAULT_VAULT_MODE; busyOps = 0; chain = Promise.resolve(); status = freshStatus(); },
+    // شبیه‌سازی بارگذاری مجدد صفحه: کلید (که در IndexedDB است) می‌ماند، کش و صف نوشتن پاک می‌شود.
+    // نسل جدید: نوشتن‌های صفِ صفحه‌ی قبلی انجام نمی‌شوند؛ حالت‌های آزمون به پیش‌فرض برمی‌گردند
+    reset() {
+      generation += 1; pending = 0; busyOps = 0; failVault = false; vaultMode = DEFAULT_VAULT_MODE; keyCache = null;
+      chain = Promise.resolve(); status = freshStatus(); lastSavedAt = null; lastError = null; listeners = new Set();
+    },
   };
 
   root.LocalStore = {
-    init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain,
-    recoveryInfo, importLegacy, swapWithBackup,
-    V2_KEY, V3_KEY, BACKUP_KEY, UNREADABLE, testing,
+    init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
+    recoveryInfo, importLegacy, swapWithBackup, restoreBackup, restoreBlockedReason, subscribe, getWriteStatus: writeStatus,
+    V2_KEY, V3_KEY, BACKUP_KEY, SWAP_KEY, UNREADABLE, testing,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -235,6 +235,85 @@ test('قبل از راه‌اندازی نوشتن انجام نمی‌شود', 
   assert.equal(LS.isReady(), false);
 });
 
+test('شمارش نوشتن‌های در انتظار: همزمان با ذخیره بالا می‌رود و بعد از نوشتن به صفر برمی‌گردد', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  assert.equal(LS.pendingCount(), 0);
+  LS.save(target);
+  assert.equal(LS.pendingCount(), 1, 'بلافاصله بعد از ذخیره در انتظار است');
+  LS.save(target);
+  LS.save(target);
+  assert.equal(LS.pendingCount(), 3);
+  await LS.flush();
+  assert.equal(LS.pendingCount(), 0, 'بعد از تکمیل همه‌ی نوشتن‌ها صفر است');
+});
+
+test('بسته شدن صفحه وسط نوشتن: آخرین تغییر ناتمام است ولی پاکت قبلی سالم و کامل می‌ماند', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'حالت-الف', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+
+  target.customers = [{ name: 'حالت-ب-ناتمام', phone: '', note: '' }];
+  LS.save(target); // هنوز نوشته نشده
+  LS.testing.reset(); // بارگذاری مجدد: نسل قبلی دیگر نمی‌نویسد
+
+  await LS.flush();
+  const env = JSON.parse(storage.map.get(V3_KEY));
+  assert.ok(env && env.ct, 'پاکت کامل است و نیمه‌نوشته نیست');
+  const again = await startWith(storage);
+  assert.equal(again.st.locked, false);
+  assert.equal(again.target.customers[0].name, 'حالت-الف', 'آخرین نوشتن کامل‌شده برگشته است');
+});
+
+test('شکست نوشتن روی انبار: پاکت قبلی دست‌نخورده می‌ماند و خطا گزارش می‌شود', async () => {
+  const storage = fakeStorage();
+  let errors = 0;
+  await LS.init({ storage, target: {}, seed, onError: () => { errors += 1; } });
+  const state = seed();
+  state.customers = [{ name: 'سالم', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  const good = storage.map.get(V3_KEY);
+
+  const realSet = storage.setItem;
+  storage.setItem = (k, v) => { if (k === V3_KEY) throw new Error('quota'); return realSet(k, v); };
+  state.customers = [{ name: 'ناموفق', phone: '', note: '' }];
+  LS.save(state); await LS.flush();
+  assert.equal(errors, 1, 'خطا یک بار گزارش شد');
+  assert.equal(storage.map.get(V3_KEY), good, 'پاکت سالم قبلی نباید آسیب ببیند');
+  assert.equal(LS.pendingCount(), 0);
+});
+
+test('نوشتن‌های سریع پشت‌سرهم: شمارش درست و آخرین وضعیت ذخیره می‌شود', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  for (let i = 0; i < 40; i += 1) {
+    target.customers = [{ name: 'سریع-' + i, phone: '', note: '' }];
+    LS.save(target);
+  }
+  assert.equal(LS.pendingCount(), 40);
+  await LS.flush();
+  assert.equal(LS.pendingCount(), 0);
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'سریع-39');
+});
+
+test('راه‌اندازی تازه: کلید پیش از اولین نوشتن ساخته می‌شود و نوشتن اول کامل می‌شود', async () => {
+  const storage = fakeStorage();
+  await startWith(storage);
+  const st = LS.getStatus();
+  assert.equal(st.ready, true);
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'اولین', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+  LS.testing.reset();
+  const again = await startWith(storage);
+  assert.equal(again.target.customers[0].name, 'اولین');
+});
+
 test('خطای IndexedDB هنگام راه‌اندازی: قفل با دلیل vault_unavailable، پاکت دست‌نخورده و بدون امکان حذف', async () => {
   const storage = fakeStorage();
   const { target } = await startWith(storage);
@@ -438,3 +517,199 @@ test('جابه‌جایی بدون پشتیبان: خطا و هیچ تغییری
   await startWith(storage);
   await assert.rejects(() => LS.swapWithBackup(), /پشتیبانی برای جابه‌جایی/);
 });
+
+/* ---------- نشانگر وضعیت نوشتن ---------- */
+
+test('نشانگر: «در حال ذخیره» همزمان با ذخیره، و «ذخیره شد» فقط بعد از بازخوانی موفق', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  const seen = [];
+  const stop = LS.subscribe((s) => seen.push(s.state));
+  assert.deepEqual(seen, ['idle'], 'وضعیت فعلی فوراً گزارش می‌شود');
+  target.customers = [{ name: 'نشانگر', phone: '', note: '' }];
+  LS.save(target);
+  assert.equal(LS.getWriteStatus().state, 'saving', 'بلافاصله بعد از ذخیره در حال ذخیره است');
+  await LS.flush();
+  assert.equal(LS.getWriteStatus().state, 'saved');
+  assert.ok(LS.getWriteStatus().lastSavedAt > 0);
+  assert.deepEqual(seen, ['idle', 'saving', 'saved']);
+  stop();
+});
+
+test('نشانگر: اگر بازخوانی تأیید نشود «ذخیره شد» گزارش نمی‌شود و خطا نشان داده می‌شود', async () => {
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  const seen = [];
+  LS.subscribe((s) => seen.push(s));
+  const realSet = storage.setItem;
+  storage.setItem = (k, v) => realSet(k, k === V3_KEY ? 'نوشته-نشده' : v); // نوشتن بی‌صدا ناقص
+  target.customers = [{ name: 'ناتمام', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+  storage.setItem = realSet;
+  const states = seen.map((s) => s.state);
+  assert.equal(states.includes('saved'), false, '«ذخیره شد» هرگز پیش از تأیید نشان داده نمی‌شود');
+  assert.equal(LS.getWriteStatus().state, 'error');
+  assert.match(LS.getWriteStatus().error, /ذخیره نشد/);
+
+  // نوشتن بعدی موفق باشد، وضعیت خطا پاک می‌شود
+  LS.save(target);
+  await LS.flush();
+  assert.equal(LS.getWriteStatus().state, 'saved');
+  assert.equal(LS.getWriteStatus().error, null);
+});
+
+test('نشانگر: در حالت فقط‌نشست هرگز «ذخیره شد» گزارش نمی‌شود', async () => {
+  LS.testing.setVaultMode('none');
+  const storage = fakeStorage();
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'موقت', phone: '', note: '' }];
+  LS.save(target);
+  await LS.flush();
+  assert.equal(LS.getWriteStatus().state, 'session');
+});
+
+test('نشانگر: در حین بازیابی وضعیت «بازیابی» است و بعدش «ذخیره شد»', async () => {
+  const { storage } = await staleScenario();
+  const seen = [];
+  LS.subscribe((s) => seen.push(s.state));
+  await LS.importLegacy();
+  assert.ok(seen.includes('busy'), 'در حین بازیابی وضعیت busy گزارش شد');
+  assert.equal(LS.getWriteStatus().state, 'saved');
+  void storage;
+});
+
+// ---------- شکست نوشتن در میانه‌ی ورود و جابه‌جایی ----------
+// انبار ساختگی که نوشتن‌ها را فقط وقتی کنترل شده شکست می‌دهد: نوشتن k‌ام، یا نوشتن از k‌ام به بعد (برگشت هم شکست می‌خورد).
+function armable(base) {
+  const ctl = { armed: false, failAt: 0, failAll: false, n: 0 };
+  const storage = {
+    map: base.map,
+    getItem: base.getItem,
+    removeItem: base.removeItem,
+    setItem(k, v) {
+      if (ctl.armed) {
+        ctl.n += 1;
+        if (ctl.n === ctl.failAt || (ctl.failAll && ctl.n >= ctl.failAt)) throw new Error("نوشتن شکست خورد (آزمون)");
+      }
+      base.setItem(k, v);
+    },
+  };
+  return { storage, ctl };
+}
+
+// آیا داده‌ی با این نام هنوز در یکی از انبارها قابل خواندن است؟ (ساده، رمزشده‌ی اصلی، پشتیبان، موقت)
+async function recoverable(map, name) {
+  const plain = map.get(V2_KEY);
+  if (plain) { try { if (JSON.parse(plain).customers[0].name === name) return true; } catch (e) { /* ادامه */ } }
+  for (const [key, aad] of [[V3_KEY, 'dokhtyar.local.v3'], [BACKUP_KEY, 'dokhtyar.local.backup'], [LS.SWAP_KEY, 'dokhtyar.local.swap']]) {
+    const env = map.get(key);
+    if (!env) continue;
+    try {
+      if (JSON.parse(await LS.testing.openAny(env, aad)).customers[0].name === name) return true;
+    } catch (e) { /* این انبار خوانا نیست؛ بقیه را بررسی کن */ }
+  }
+  return false;
+}
+
+// وضعیت شروع: داده‌ی فعلی «جدید» در رمزشده، و نسخه‌ی ساده‌ی قدیمی «قدیمی» که هنوز وارد نشده
+async function armedStart() {
+  const base = fakeStorage();
+  const { storage, ctl } = armable(base);
+  const { target } = await startWith(storage);
+  target.customers = [{ name: 'جدید-آزمون', phone: '', note: '' }];
+  LS.save(target); await LS.flush();
+  base.map.set(V2_KEY, JSON.stringify(legacyState('قدیمی-آزمون')));
+  LS.testing.reset();
+  const again = await startWith(storage);
+  return { base, ctl, target: again.target };
+}
+
+for (const failAll of [false, true]) {
+  test(`ورود داده‌ی قدیمی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'فقط یک نوشتن شکست می‌خورد'}): هیچ‌کدام از دو داده گم نمی‌شود`, async () => {
+    for (let failAt = 1; failAt <= 5; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      let ok = true;
+      try { await LS.importLegacy(); } catch (e) { ok = false; }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      assert.ok(await recoverable(base.map, 'قدیمی-آزمون'), `نقطه‌ی شکست ${failAt}: نسخه‌ی قدیمی باید بماند`);
+      if (!ok) assert.equal(LS.getStatus().locked, false, `نقطه‌ی شکست ${failAt}: قفل نباید بماند`);
+    }
+  });
+}
+
+for (const failAll of [false, true]) {
+  test(`جابه‌جایی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'فقط یک نوشتن شکست می‌خورد'}): داده‌ی فعلی و پشتیبان هیچ‌کدام گم نمی‌شوند`, async () => {
+    for (let failAt = 1; failAt <= 7; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      await LS.importLegacy(); // اکنون: اصلی = قدیمی، پشتیبان = جدید
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      let swapped = true;
+      try { await LS.swapWithBackup(); } catch (e) { swapped = false; }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      assert.ok(await recoverable(base.map, 'قدیمی-آزمون'), `نقطه‌ی شکست ${failAt}: پشتیبان باید بماند`);
+      // اگر جابه‌جایی شکست خورد و برگشت کامل شد، انبار موقت باید پاک شده باشد
+      if (!swapped && !failAll) assert.equal(base.map.has(LS.SWAP_KEY), false, `نقطه‌ی شکست ${failAt}: انبار موقت باید پاک شود`);
+    }
+  });
+}
+
+// ---------- بازگردانی از فایل ----------
+const restoredObj = (name) => ({
+  orders: [], customers: [{ name, phone: '', note: '' }], staff: [], transactions: [],
+  settings: { shopName: 'بازگردانی', ownerName: '', phone: '', address: '', currency: 'تومان' },
+});
+
+test('بازگردانی: داده‌ی فعلی به پشتیبان می‌رود و داده‌ی فایل جایگزین می‌شود؛ بعد از بارگذاری مجدد هم درست است', async () => {
+  const { base, target } = await armedStart();
+  // armedStart یک نسخه‌ی ساده‌ی قدیمی دارد؛ برای این آزمون آن را حذف می‌کنیم تا فقط بازگردانی بررسی شود
+  base.map.delete(V2_KEY);
+  const counts = await LS.restoreBackup(restoredObj('از-فایل'));
+  assert.equal(counts.customers, 1);
+  assert.equal(target.customers[0].name, 'از-فایل');
+  assert.ok(base.map.get(BACKUP_KEY), 'داده‌ی فعلی در پشتیبان است');
+  LS.testing.reset();
+  const again = await startWith(base);
+  assert.equal(again.target.customers[0].name, 'از-فایل');
+});
+
+test('بازگردانی دوم وقتی پشتیبان هست: رد می‌شود و هیچ‌چیز تغییر نمی‌کند', async () => {
+  const { base, target } = await armedStart();
+  base.map.delete(V2_KEY);
+  await LS.restoreBackup(restoredObj('اول'));
+  const snap = base.map.get(V3_KEY);
+  const snapBak = base.map.get(BACKUP_KEY);
+  await assert.rejects(() => LS.restoreBackup(restoredObj('دوم')), /پشتیبان محافظت‌شده/);
+  assert.equal(base.map.get(V3_KEY), snap);
+  assert.equal(base.map.get(BACKUP_KEY), snapBak);
+  assert.equal(target.customers[0].name, 'اول');
+});
+
+test('بازگردانی در حالت فقط‌نشست یا قفل: رد می‌شود', async () => {
+  const storage = fakeStorage();
+  // بدون IndexedDB حالت persistent نیست
+  LS.testing.setVaultMode('none');
+  const r = await startWith(storage);
+  assert.equal(r.st.persistent, false);
+  await assert.rejects(() => LS.restoreBackup(restoredObj('x')), /ذخیره‌ی دائمی/);
+});
+
+for (const failAll of [false, true]) {
+  test(`بازگردانی با شکست نوشتن (${failAll ? 'برگشت هم شکست می‌خورد' : 'یک نوشتن شکست می‌خورد'}): هیچ‌کدام از دو داده گم نمی‌شود`, async () => {
+    for (let failAt = 1; failAt <= 5; failAt += 1) {
+      LS.testing.reset();
+      const { base, ctl } = await armedStart();
+      base.map.delete(V2_KEY);
+      ctl.armed = true; ctl.failAt = failAt; ctl.failAll = failAll; ctl.n = 0;
+      try { await LS.restoreBackup(restoredObj('از-فایل')); } catch (e) { /* مجاز */ }
+      assert.ok(await recoverable(base.map, 'جدید-آزمون'), `نقطه‌ی شکست ${failAt}: داده‌ی فعلی باید بماند`);
+      // یا بازگردانی کامل شده، یا داده‌ی فعلی همچنان در انبار اصلی است
+      const restored = await recoverable(base.map, 'از-فایل');
+      const kept = await recoverable(base.map, 'جدید-آزمون');
+      assert.ok(restored || kept, `نقطه‌ی شکست ${failAt}`);
+    }
+  });
+}

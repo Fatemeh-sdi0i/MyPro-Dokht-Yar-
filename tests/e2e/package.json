@@ -10,7 +10,15 @@
     "test:offline-server": "node --test offline.server.test.js",
     "test:pwa": "node --test pwa.test.js",
     "test:encryption": "node --test encryption.test.js",
-    "test:local-encryption": "node --test local-encryption.test.js"
+    "test:local-encryption": "node --test local-encryption.test.js",
+    "test:unload": "node --test unload.server.test.js",
+    "test:backup": "node --test backup.encrypted.test.js",
+    "test:restore": "node --test restore.test.js",
+    "test:dashboard": "node --test dashboard.dates.test.js",
+    "test:export-server": "node --test server.export.test.js server.export.real.test.js",
+    "test:compat": "node --test browser.compat.test.js",
+    "test:restore-server": "node --test server.restore.test.js server.restore.real.test.js",
+    "test:undo": "node --test transactions.undo.test.js"
   },
   "devDependencies": {
     "playwright": "1.47.2"

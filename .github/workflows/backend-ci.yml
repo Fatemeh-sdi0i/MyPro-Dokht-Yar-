@@ -48,7 +48,7 @@ jobs:
           node-version: 20
 
       - name: Run unit tests
-        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js
+        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js tests/backup-validate.test.js
 
   api:
     name: API tests (Fastify + PostgreSQL)
@@ -176,10 +176,62 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:local-encryption
 
+      - name: Run server-mode unload warning browser test (no IndexedDB, queued changes)
+        working-directory: tests/e2e
+        run: npm run test:unload
+
+      - name: Run encrypted backup browser test (password, wrong password, corrupt file, no overwrite)
+        working-directory: tests/e2e
+        run: npm run test:backup
+
+      - name: Run local restore browser test (plaintext and encrypted, protected backup)
+        working-directory: tests/e2e
+        run: npm run test:restore
+
+      - name: Run local date validation and monthly chart browser test
+        working-directory: tests/e2e
+        run: npm run test:dashboard
+
       - name: Run offline sync test against real server and PostgreSQL
         working-directory: tests/e2e
         run: npm run test:offline-server
 
+      - name: Run server-mode export test against real server and PostgreSQL (plaintext, encrypted, non-admin refused)
+        working-directory: tests/e2e
+        run: npm run test:export-server
+
+      - name: Run server restore and transaction undo browser tests (mock API and real server)
+        working-directory: tests/e2e
+        run: |
+          npm run test:restore-server
+          npm run test:undo
+
       - name: Show server log on failure
         if: failure()
         run: cat "$RUNNER_TEMP/server.log" || true
+
+  browser-compat:
+    name: Browser compatibility (${{ matrix.browser }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install browser test dependencies
+        working-directory: tests/e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run compatibility test (encrypted local storage, reload, encrypted backup)
+        working-directory: tests/e2e
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npm run test:compat

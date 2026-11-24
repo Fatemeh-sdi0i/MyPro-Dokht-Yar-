@@ -348,6 +348,15 @@
     return ops.sort((a, b) => a.order - b.order);
   }
 
+  // همگام (برای beforeunload): تعداد تغییرات داده‌ای که فقط در حافظه‌ی همین صفحه‌اند.
+  // فقط وقتی IndexedDB نباشد صف در حافظه می‌ماند؛ در غیر این صورت صف پایدار است و هشداری لازم نیست.
+  function unsentSessionCount() {
+    if (root.indexedDB) return 0;
+    let n = 0;
+    for (const op of memory.queue.values()) if (op.path !== LOGOUT_PATH) n += 1;
+    return n;
+  }
+
   // تعداد تغییرات داده (بدون عملیات خروج)
   async function pendingCount() {
     return (await pendingOps()).filter((o) => o.path !== LOGOUT_PATH).length;
@@ -594,6 +603,7 @@
       orders: [...(raw.orders || [])],
       staff: [...(raw.staff || [])],
       transactions: [...(raw.transactions || [])],
+      deletedTransactions: [...(raw.deletedTransactions || [])],
       settings: { ...(raw.settings || {}) },
     };
     for (const op of ops) {
@@ -621,7 +631,10 @@
         out.transactions.unshift({ id: body.id, kind: body.kind, category: body.category, amount: body.amount,
           occurred_on: body.occurred_on || todayIso(op.createdAt), note: body.note || "", _pending: true });
       } else if (method === "DELETE" && (m = path.match(/^\/transactions\/([^/]+)$/))) {
+        // حذف در صف: ردیف از فهرست اصلی به فهرست حذف‌شده‌ها می‌رود تا بازگردانی ممکن بماند
+        const gone = out.transactions.find((t) => t.id === m[1]);
         out.transactions = out.transactions.filter((t) => t.id !== m[1]);
+        if (gone && !out.deletedTransactions.some((t) => t.id === m[1])) out.deletedTransactions.unshift({ ...gone, _pending: true });
       } else if (method === "PUT" && path === "/settings") {
         Object.assign(out.settings, body);
       }
@@ -663,7 +676,7 @@
     testing,
     beginSession, endSession, lastScope, currentUser, restoreScope,
     requestLogout, hasPendingLogout, settleLogout, finishPendingLogouts,
-    pendingOps, pendingCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
+    pendingOps, pendingCount, unsentSessionCount, rejectedOps, rejectedOp, retryRejected, discardRejected, expectedStatusVersion,
     saveCache, loadCache, applyPending,
   };
 })(typeof window !== "undefined" ? window : globalThis);

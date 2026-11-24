@@ -59,12 +59,20 @@
   }
 
   // ورودی/خروجی رشته‌ی ISO میلادی (YYYY-MM-DD) و شمسی به شکل YYYY/MM/DD (ارقام انگلیسی یا فارسی)
+  // نامعتبر (قالب، ماه ۱ تا ۱۲، یا روزی که در آن ماه وجود ندارد مثل ۳۱ مهر یا ۳۰ اسفند غیرکبیسه) → null
   function jalaliStringToISO(s) {
     const en = String(s).replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))
       .replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
     const m = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(en.trim());
     if (!m) return null;
-    const { gy, gm, gd } = jalaliToGregorian(+m[1], +m[2], +m[3]);
+    const jy = +m[1];
+    const jm = +m[2];
+    const jd = +m[3];
+    if (jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
+    const { gy, gm, gd } = jalaliToGregorian(jy, jm, jd);
+    // اعتبارسنجی تقویمی: تبدیل برگشتی باید همان تاریخ را بدهد؛ روز بیش از طول ماه به ماه بعد می‌افتد
+    const back = gregorianToJalali(gy, gm, gd);
+    if (back.jy !== jy || back.jm !== jm || back.jd !== jd) return null;
     return `${gy}-${String(gm).padStart(2, '0')}-${String(gd).padStart(2, '0')}`;
   }
 

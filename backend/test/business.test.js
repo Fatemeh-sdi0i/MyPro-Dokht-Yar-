@@ -22,7 +22,7 @@ before(async () => {
   db = createPool(URL);
   app = buildApp({ db, loginMax: 1000 });
   await app.ready();
-  await db.query('TRUNCATE shops, users, sessions, customers, staff, orders, order_status_log, transactions CASCADE');
+  await db.query('TRUNCATE shops, users, sessions, customers, staff, orders, order_status_log, transactions, shop_snapshots CASCADE');
   const { shopId } = await createShopAdmin(db, { shopName: 'مزون تست', email: 'admin@test.dev', password: PASSWORD, fullName: 'مدیر' });
   // کاربر غیر مدیر برای آزمون دسترسی
   await db.query(
@@ -99,7 +99,7 @@ test('settings: admin updates shop info; phone normalized; currency stored', asy
   assert.equal((await call('GET', '/api/v1/settings')).json().shop_name, 'مزون دوخت‌یار');
 });
 
-test('export: admin gets a complete JSON backup without deleted rows', async () => {
+test('export: admin gets a complete JSON backup (deleted rows included, marked by deleted_at)', async () => {
   const res = await call('GET', '/api/v1/export');
   assert.equal(res.statusCode, 200);
   const body = res.json();
