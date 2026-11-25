@@ -101,6 +101,8 @@ async function openApp({ seedV2, failV3 = false, noIndexedDb = false, dialogs = 
   }
   await page.goto(base + "/index.html");
   await waitFor(() => page.evaluate(() => document.readyState === "complete"), "بارگذاری صفحه");
+  // برنامه کلیک‌ها را پیش از آمادگی نادیده می‌گیرد؛ تا نشانگر آمادگی صبر می‌کنیم
+  await waitFor(() => page.evaluate(() => document.body.dataset.ready === "true"), "آماده شدن برنامه");
   return { page, plan, unexpected };
 }
 
@@ -118,6 +120,7 @@ async function addCustomer(page, name) {
 
 async function showCustomers(page) {
   await page.click('.nav-item[data-page="customers"]');
+  await page.waitForSelector("#addCustomerBtn", { state: "visible", timeout: 8000 });
 }
 
 test('راه‌اندازی تازه: بدون قفل و بدون نوشتن داده‌ی ساده', async () => {
