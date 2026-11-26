@@ -203,6 +203,63 @@ test('همکار: کاربر غیر مدیر نمی‌تواند حذف یا ب�
   assert.equal((await call('POST', `/api/v1/staff/${s.id}/restore`)).statusCode, 200);
 });
 
+test('سفارش مشتری حذف‌شده: قابل مشاهده و در گزارش و پشتیبان؛ ویرایش، تغییر وضعیت و حذف با 409 تا بازگردانی مشتری', async () => {
+  const c = (await call('POST', '/api/v1/customers', { name: 'سپیده', phone: '09131110007' })).json();
+  const created = (await call('POST', '/api/v1/orders', { customer_id: c.id, type: 'sewing', description: 'کت', price: 900000 })).json();
+  const done = (await call('POST', `/api/v1/orders/${created.id}/status`, { to: 'delivered', version: created.version })).json();
+
+  const snapshot = async () => {
+    const row = (await db.query(
+      'SELECT version, status, description, price::text AS price, due_on, deleted_at FROM orders WHERE id = $1', [created.id]
+    )).rows[0];
+    const log = (await db.query('SELECT count(*)::int AS n FROM order_status_log WHERE order_id = $1', [created.id])).rows[0].n;
+    return { ...row, log };
+  };
+  const moneyBefore = (await call('GET', '/api/v1/reports/summary')).json().money;
+  const before = await snapshot();
+  assert.equal(before.log, 2, 'ثبت ایجاد و یک تغییر وضعیت');
+
+  assert.equal((await call('DELETE', `/api/v1/customers/${c.id}?version=${c.version}`)).statusCode, 200);
+
+  // قابل مشاهده: جزئیات و فهرست، با پرچم customer_deleted
+  const detail = await call('GET', `/api/v1/orders/${created.id}`);
+  assert.equal(detail.statusCode, 200);
+  assert.equal(detail.json().customer_deleted, true);
+  const listed = (await call('GET', '/api/v1/orders')).json().items.find((x) => x.id === created.id);
+  assert.ok(listed, 'در فهرست سفارش‌ها هست');
+  assert.equal(listed.customer_deleted, true);
+
+  // هر سه عملیات نوشتن با 409 رد می‌شوند
+  const expectBlocked = async (res) => {
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.json().error, 'customer_deleted');
+  };
+  await expectBlocked(await call('PATCH', `/api/v1/orders/${created.id}`, { description: 'تغییر', version: done.version }));
+  await expectBlocked(await call('PATCH', `/api/v1/orders/${created.id}`, { price: 1 }));
+  await expectBlocked(await call('POST', `/api/v1/orders/${created.id}/status`, { to: 'waiting', version: done.version }));
+  await expectBlocked(await call('POST', `/api/v1/orders/${created.id}/status`, { to: 'delivered', version: done.version }));
+  await expectBlocked(await call('DELETE', `/api/v1/orders/${created.id}?version=${done.version}`));
+  await expectBlocked(await call('DELETE', `/api/v1/orders/${created.id}`));
+
+  // هیچ تغییری ایجاد نشده است: ردیف، version و تاریخچه‌ی وضعیت
+  assert.deepEqual(await snapshot(), before);
+
+  // سوابق مالی و پشتیبان: سفارش همچنان لحاظ می‌شود
+  assert.deepEqual((await call('GET', '/api/v1/reports/summary')).json().money, moneyBefore);
+  const backup = (await call('GET', '/api/v1/export')).json();
+  assert.ok(backup.orders.some((r) => r.id === created.id && r.deleted_at === null), 'در پشتیبان هست');
+
+  // پس از بازگردانی مشتری، عملیات دوباره مجازند و پرچم false می‌شود
+  assert.equal((await call('POST', `/api/v1/customers/${c.id}/restore`)).statusCode, 200);
+  const after = (await call('GET', `/api/v1/orders/${created.id}`)).json();
+  assert.equal(after.customer_deleted, false);
+  const patched = await call('PATCH', `/api/v1/orders/${created.id}`, { description: 'کت مجلسی', version: after.version });
+  assert.equal(patched.statusCode, 200);
+  assert.equal(patched.json().description, 'کت مجلسی');
+  assert.equal((await call('POST', `/api/v1/orders/${created.id}/status`, { to: 'ready', version: patched.json().version })).statusCode, 200);
+  assert.equal((await call('DELETE', `/api/v1/orders/${created.id}`)).statusCode, 200);
+});
+
 test('همکار: بازگردانی همکار حذف‌نشده ۴۰۴ می‌دهد', async () => {
   const s = (await call('POST', '/api/v1/staff', { name: 'ژیلا', role_title: 'برش' })).json();
   assert.equal((await call('POST', `/api/v1/staff/${s.id}/restore`)).statusCode, 404);
