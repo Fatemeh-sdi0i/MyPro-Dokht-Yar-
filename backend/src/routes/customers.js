@@ -1,6 +1,9 @@
 const { normalizePhone, HttpError, existingOwned, isIdRace } = require('../util');
 
 const CUSTOMER_TIERS = ['regular', 'active', 'vip'];
+const idParam = { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } };
+const VERSION_QUERY = { type: 'object', properties: { version: { type: 'integer', minimum: 1 } } };
+const versionConflict = () => new HttpError(409, 'version_conflict', 'این مشتری هم‌زمان تغییر کرده است؛ صفحه را تازه کنید');
 
 const customerOut = (c) => ({
   id: c.id, name: c.name, phone: c.phone, note: c.note, tier: c.tier,
@@ -117,15 +120,51 @@ module.exports = async function customersRoutes(app, { db }) {
     return customerOut(await loadCustomer(db, req.user.shop_id, req.params.id));
   });
 
-  // حذف نرم: سفارش‌های مشتری حذف نمی‌شوند
-  app.delete('/customers/:id', {
-    schema: { params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } } },
-  }, async (req) => {
-    await loadCustomer(db, req.user.shop_id, req.params.id);
-    await db.query(
-      'UPDATE customers SET deleted_at = now() WHERE id = $1 AND shop_id = $2',
-      [req.params.id, req.user.shop_id]
+  // فهرست مشتری‌های حذف‌شده (برای بازگردانی)؛ پیش از /customers/:id تعریف می‌شود
+  app.get('/customers/deleted', async (req) => {
+    const { rows } = await db.query(
+      `${baseSelect} WHERE c.shop_id = $1 AND c.deleted_at IS NOT NULL ORDER BY c.deleted_at DESC LIMIT 500`,
+      [req.user.shop_id]
     );
+    return { items: rows.map((c) => ({ ...customerOut(c), deleted_at: c.deleted_at })) };
+  });
+
+  // حذف نرم: سفارش‌های مشتری حذف نمی‌شوند.
+  // اگر version فرستاده شود و با نسخه‌ی فعلی نخواند، ۴۰۹ و بدون تغییر.
+  app.delete('/customers/:id', {
+    schema: { params: idParam, querystring: VERSION_QUERY },
+  }, async (req) => {
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    const expected = req.query.version;
+    const current = await loadCustomer(db, shopId, id);
+    if (expected !== undefined && expected !== current.version) throw versionConflict();
+    // شرط نسخه داخل خود UPDATE هم هست تا تغییر هم‌زمان بین بررسی و نوشتن گم نشود
+    const { rowCount } = await db.query(
+      `UPDATE customers SET deleted_at = now()
+        WHERE id = $1 AND shop_id = $2 AND deleted_at IS NULL AND ($3::int IS NULL OR version = $3)`,
+      [id, shopId, expected ?? null]
+    );
+    if (rowCount === 0) throw versionConflict();
     return { ok: true };
+  });
+
+  // بازگردانی مشتری حذف‌شده. اگر شماره‌ی تماسش اکنون متعلق به مشتری فعال دیگری باشد، ۴۰۹ و بدون تغییر.
+  app.post('/customers/:id/restore', { schema: { params: idParam } }, async (req) => {
+    const shopId = req.user.shop_id;
+    let rows;
+    try {
+      ({ rows } = await db.query(
+        'UPDATE customers SET deleted_at = NULL WHERE id = $1 AND shop_id = $2 AND deleted_at IS NOT NULL RETURNING id',
+        [req.params.id, shopId]
+      ));
+    } catch (err) {
+      if (err.code === '23505' && err.constraint === 'customers_phone_key') {
+        throw new HttpError(409, 'phone_taken', 'این شماره‌ی تماس اکنون برای مشتری دیگری ثبت شده است؛ ابتدا یکی از آن‌ها را تغییر دهید');
+      }
+      throw err;
+    }
+    if (!rows[0]) throw new HttpError(404, 'not_found', 'مشتری حذف‌شده‌ای با این شناسه پیدا نشد');
+    return customerOut(await loadCustomer(db, shopId, req.params.id));
   });
 };

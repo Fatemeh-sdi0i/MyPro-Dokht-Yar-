@@ -3,16 +3,40 @@ const { isoDate, HttpError, existingOwned, isIdRace } = require('../util');
 
 const ORDER_TYPES = ['sewing', 'repair'];
 const ORDER_STATUSES = ['waiting', 'progress', 'ready', 'delivered'];
+const VERSION_QUERY = { type: 'object', properties: { version: { type: 'integer', minimum: 1 } } };
+const versionConflict = () => new HttpError(409, 'version_conflict', 'این سفارش هم‌زمان تغییر کرده است؛ صفحه را تازه کنید');
 
 const orderOut = (o) => ({
   id: o.id, order_no: o.order_no, customer_id: o.customer_id, customer_name: o.customer_name,
+  customer_deleted: Boolean(o.customer_deleted),
   type: o.type, description: o.description, status: o.status, price: o.price,
   created_on: o.created_on, due_on: o.due_on, version: o.version, updated_at: o.updated_at,
 });
 
 const baseSelect = `
-  SELECT o.*, c.name AS customer_name
+  SELECT o.*, c.name AS customer_name, (c.deleted_at IS NOT NULL) AS customer_deleted
     FROM orders o JOIN customers c ON c.id = o.customer_id`;
+
+// پیام ثابت برای هر سه عملیات نوشتن روی سفارش مشتری حذف‌شده
+const CUSTOMER_DELETED_WRITE = 'مشتری این سفارش حذف شده است؛ تا بازگردانی مشتری، این سفارش فقط قابل مشاهده است';
+
+// قفل سفارش (FOR UPDATE) و مشتری (FOR SHARE) در تراکنش فعلی.
+// اگر مشتری حذف باشد ۴۰۹ می‌دهد؛ چون پیش از هر نوشتنی برمی‌گردد، هیچ ردیفی تغییر نمی‌کند.
+// ترتیب قفل (اول سفارش، بعد مشتری) با بازگردانی سفارش یکی است تا بن‌بست پیش نیاید.
+async function lockOrderForWrite(tx, shopId, id) {
+  const { rows } = await tx.query(
+    `SELECT o.id, o.customer_id, o.status, o.version
+       FROM orders o
+      WHERE o.id = $1 AND o.shop_id = $2 AND o.deleted_at IS NULL
+      FOR UPDATE OF o`,
+    [id, shopId]
+  );
+  const order = rows[0];
+  if (!order) throw new HttpError(404, 'not_found', 'سفارش پیدا نشد');
+  const cust = await tx.query('SELECT deleted_at FROM customers WHERE id = $1 FOR SHARE', [order.customer_id]);
+  if (!cust.rows[0] || cust.rows[0].deleted_at) throw new HttpError(409, 'customer_deleted', CUSTOMER_DELETED_WRITE);
+  return order;
+}
 
 async function loadOrder(db, shopId, id) {
   const { rows } = await db.query(
@@ -149,28 +173,32 @@ module.exports = async function ordersRoutes(app, { db }) {
       },
     },
   }, async (req) => {
-    const current = await loadOrder(db, req.user.shop_id, req.params.id);
-    if (req.body.version !== undefined && req.body.version !== current.version) {
-      throw new HttpError(409, 'version_conflict', 'این سفارش هم‌زمان تغییر کرده است؛ صفحه را تازه کنید');
-    }
-    const sets = [];
-    const vals = [];
-    const add = (col, val) => { vals.push(val); sets.push(`${col} = $${vals.length}`); };
-    if (req.body.type !== undefined) add('type', req.body.type);
-    if (req.body.description !== undefined) add('description', req.body.description.trim());
-    if (req.body.price !== undefined) add('price', req.body.price);
-    if (req.body.due_on !== undefined) {
-      const due = isoDate(req.body.due_on);
-      if (due === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ تحویل معتبر نیست');
-      add('due_on', due);
-    }
-    if (sets.length) {
-      vals.push(req.params.id, req.user.shop_id);
-      await db.query(
-        `UPDATE orders SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND shop_id = $${vals.length}`, vals
-      );
-    }
-    return orderOut(await loadOrder(db, req.user.shop_id, req.params.id));
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    await withTx(db, async (tx) => {
+      const current = await lockOrderForWrite(tx, shopId, id);
+      if (req.body.version !== undefined && req.body.version !== current.version) {
+        throw new HttpError(409, 'version_conflict', 'این سفارش هم‌زمان تغییر کرده است؛ صفحه را تازه کنید');
+      }
+      const sets = [];
+      const vals = [];
+      const add = (col, val) => { vals.push(val); sets.push(`${col} = $${vals.length}`); };
+      if (req.body.type !== undefined) add('type', req.body.type);
+      if (req.body.description !== undefined) add('description', req.body.description.trim());
+      if (req.body.price !== undefined) add('price', req.body.price);
+      if (req.body.due_on !== undefined) {
+        const due = isoDate(req.body.due_on);
+        if (due === undefined) throw new HttpError(400, 'invalid_date', 'تاریخ تحویل معتبر نیست');
+        add('due_on', due);
+      }
+      if (sets.length) {
+        vals.push(id, shopId);
+        await tx.query(
+          `UPDATE orders SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND shop_id = $${vals.length}`, vals
+        );
+      }
+    });
+    return orderOut(await loadOrder(db, shopId, id));
   });
 
   // تغییر وضعیت: در همان تراکنش، تاریخچه ثبت می‌شود
@@ -191,12 +219,7 @@ module.exports = async function ordersRoutes(app, { db }) {
   }, async (req) => {
     const shopId = req.user.shop_id;
     await withTx(db, async (tx) => {
-      const { rows } = await tx.query(
-        'SELECT id, status, version FROM orders WHERE id = $1 AND shop_id = $2 AND deleted_at IS NULL FOR UPDATE',
-        [req.params.id, shopId]
-      );
-      const order = rows[0];
-      if (!order) throw new HttpError(404, 'not_found', 'سفارش پیدا نشد');
+      const order = await lockOrderForWrite(tx, shopId, req.params.id);
       if (req.body.version !== undefined && req.body.version !== order.version) {
         throw new HttpError(409, 'version_conflict', 'وضعیت این سفارش هم‌زمان تغییر کرده است');
       }
@@ -210,10 +233,46 @@ module.exports = async function ordersRoutes(app, { db }) {
     return orderOut(await loadOrder(db, shopId, req.params.id));
   });
 
-  app.delete('/orders/:id', { schema: { params: idParam } }, async (req) => {
-    await loadOrder(db, req.user.shop_id, req.params.id);
-    await db.query('UPDATE orders SET deleted_at = now() WHERE id = $1 AND shop_id = $2',
-      [req.params.id, req.user.shop_id]);
+  // فهرست سفارش‌های حذف‌شده (برای بازگردانی)؛ پیش از /orders/:id تعریف می‌شود
+  app.get('/orders/deleted', async (req) => {
+    const { rows } = await db.query(
+      `${baseSelect} WHERE o.shop_id = $1 AND o.deleted_at IS NOT NULL ORDER BY o.deleted_at DESC LIMIT 500`,
+      [req.user.shop_id]
+    );
+    return { items: rows.map((o) => ({ ...orderOut(o), deleted_at: o.deleted_at })) };
+  });
+
+  // حذف نرم. اگر version فرستاده شود و با نسخه‌ی فعلی نخواند، ۴۰۹ و بدون تغییر.
+  app.delete('/orders/:id', { schema: { params: idParam, querystring: VERSION_QUERY } }, async (req) => {
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    const expected = req.query.version;
+    await withTx(db, async (tx) => {
+      const current = await lockOrderForWrite(tx, shopId, id);
+      if (expected !== undefined && expected !== current.version) throw versionConflict();
+      await tx.query('UPDATE orders SET deleted_at = now() WHERE id = $1', [id]);
+    });
     return { ok: true };
+  });
+
+  // بازگردانی سفارش حذف‌شده. اگر مشتری آن هنوز حذف است، ۴۰۹ `customer_deleted` و بدون تغییر.
+  app.post('/orders/:id/restore', { schema: { params: idParam } }, async (req) => {
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    await withTx(db, async (tx) => {
+      const { rows } = await tx.query(
+        'SELECT id, customer_id FROM orders WHERE id = $1 AND shop_id = $2 AND deleted_at IS NOT NULL FOR UPDATE',
+        [id, shopId]
+      );
+      const order = rows[0];
+      if (!order) throw new HttpError(404, 'not_found', 'سفارش حذف‌شده‌ای با این شناسه پیدا نشد');
+      // قفل اشتراکی روی مشتری تا حذف هم‌زمان او بین بررسی و بازگردانی انجام نشود
+      const cust = await tx.query('SELECT deleted_at FROM customers WHERE id = $1 FOR SHARE', [order.customer_id]);
+      if (!cust.rows[0] || cust.rows[0].deleted_at) {
+        throw new HttpError(409, 'customer_deleted', 'مشتری این سفارش حذف شده است؛ ابتدا مشتری را بازگردانید');
+      }
+      await tx.query('UPDATE orders SET deleted_at = NULL WHERE id = $1', [order.id]);
+    });
+    return orderOut(await loadOrder(db, shopId, id));
   });
 };
