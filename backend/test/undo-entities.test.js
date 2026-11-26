@@ -130,12 +130,14 @@ test('همکار: حذف، مسدودسازی ورود حساب متصل، و ب
     [shopId, await hashPassword(PASSWORD)]
   )).rows[0].id;
   await db.query('UPDATE staff SET user_id = $1 WHERE id = $2', [user, s.id]);
+  // اتصال مستقیم با SQL نسخه را بالا می‌برد؛ نسخه‌ی فعلی را از پایگاه داده می‌خوانیم
+  const version = (await db.query('SELECT version FROM staff WHERE id = $1', [s.id])).rows[0].version;
 
   // نسخه‌ی قدیمی ۴۰۹ می‌دهد و حساب را مسدود نمی‌کند
-  assert.equal((await call('DELETE', `/api/v1/staff/${s.id}?version=${s.version + 1}`)).statusCode, 409);
+  assert.equal((await call('DELETE', `/api/v1/staff/${s.id}?version=${version + 1}`)).statusCode, 409);
   assert.equal((await db.query('SELECT disabled_at FROM users WHERE id = $1', [user])).rows[0].disabled_at, null);
 
-  assert.equal((await call('DELETE', `/api/v1/staff/${s.id}?version=${s.version}`)).statusCode, 200);
+  assert.equal((await call('DELETE', `/api/v1/staff/${s.id}?version=${version}`)).statusCode, 200);
   assert.ok((await db.query('SELECT disabled_at FROM users WHERE id = $1', [user])).rows[0].disabled_at, 'حساب مسدود شد');
   assert.ok((await db.query('SELECT id FROM users WHERE id = $1', [user])).rows[0], 'حساب حذف نشد');
   assert.equal((await db.query('SELECT count(*)::int AS n FROM users WHERE id = $1', [user])).rows[0].n, 1);
