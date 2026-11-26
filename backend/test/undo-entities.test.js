@@ -110,7 +110,39 @@ test('سفارش: بازگردانی وقتی مشتری‌اش حذف است ۴
   assert.ok((await db.query('SELECT deleted_at FROM orders WHERE id = $1', [o.id])).rows[0].deleted_at, 'سفارش همچنان حذف‌شده است');
 
   assert.equal((await call('POST', `/api/v1/customers/${c.id}/restore`)).statusCode, 200);
+  // بازگردانی مشتری سفارش‌های حذف‌شده‌ی او را خودکار برنمی‌گرداند
+  assert.ok((await db.query('SELECT deleted_at FROM orders WHERE id = $1', [o.id])).rows[0].deleted_at, 'سفارش هنوز حذف‌شده است');
+  assert.ok(!(await call('GET', '/api/v1/orders')).json().items.some((x) => x.id === o.id), 'سفارش در فهرست فعال نیست');
   assert.equal((await call('POST', `/api/v1/orders/${o.id}/restore`)).statusCode, 200);
+});
+
+test('مشتری حذف‌شده: سفارش‌ها، تاریخچه‌ی وضعیت و ردیف‌های آن‌ها حذف فیزیکی نمی‌شوند', async () => {
+  const c = (await call('POST', '/api/v1/customers', { name: 'پرهام', phone: '09131110006' })).json();
+  const active = (await call('POST', '/api/v1/orders', { customer_id: c.id, type: 'sewing', description: 'کت', price: 700000 })).json();
+  const moved = (await call('POST', `/api/v1/orders/${active.id}/status`, { to: 'progress', version: active.version })).json();
+  const removed = (await call('POST', '/api/v1/orders', { customer_id: c.id, type: 'repair', description: 'زیپ', price: 20000 })).json();
+  await call('DELETE', `/api/v1/orders/${removed.id}?version=${removed.version}`);
+  const logBefore = (await db.query('SELECT count(*)::int AS n FROM order_status_log WHERE order_id = $1', [active.id])).rows[0].n;
+  assert.equal(logBefore, 1, 'یک تغییر وضعیت ثبت شده');
+
+  assert.equal((await call('DELETE', `/api/v1/customers/${c.id}?version=${c.version}`)).statusCode, 200);
+
+  const rows = (await db.query(
+    'SELECT id, status, price, deleted_at FROM orders WHERE customer_id = $1 ORDER BY order_no', [c.id]
+  )).rows;
+  assert.equal(rows.length, 2, 'هیچ سفارشی از بین نرفته است');
+  const kept = rows.find((r) => r.id === active.id);
+  assert.equal(kept.deleted_at, null, 'سفارش فعال مانده است');
+  assert.equal(kept.status, 'progress');
+  assert.equal(Number(kept.price), 700000);
+  assert.ok(rows.find((r) => r.id === removed.id).deleted_at, 'سفارش حذف‌شده همچنان حذف‌شده است');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM order_status_log WHERE order_id = $1', [active.id])).rows[0].n, logBefore, 'تاریخچه‌ی وضعیت دست‌نخورده است');
+
+  // سفارش حذف‌شده تا بازگردانی مشتری قابل بازگردانی نیست
+  assert.equal((await call('POST', `/api/v1/orders/${removed.id}/restore`)).json().error, 'customer_deleted');
+  assert.equal((await call('POST', `/api/v1/customers/${c.id}/restore`)).statusCode, 200);
+  assert.equal((await call('POST', `/api/v1/orders/${removed.id}/restore`)).statusCode, 200);
+  assert.equal((await db.query('SELECT deleted_at FROM orders WHERE id = $1', [active.id])).rows[0].deleted_at, null);
 });
 
 test('سفارش: ایجاد سفارش جدید پس از حذف، شماره‌ی حذف‌شده را دوباره نمی‌دهد', async () => {
