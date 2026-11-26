@@ -65,6 +65,17 @@
     deletedTransactions: () => request("GET", "/transactions/deleted"),
     restoreTransaction: (id) => request("POST", `/transactions/${id}/restore`),
 
+    // حذف و بازگردانی مشتری، سفارش و همکار (گام دوم Undo)؛ نسخه‌ی دیده‌شده همراه می‌رود
+    deletedCustomers: () => request("GET", "/customers/deleted"),
+    deleteCustomer: (id, version) => request("DELETE", `/customers/${id}` + qs({ version })),
+    restoreCustomer: (id) => request("POST", `/customers/${id}/restore`),
+    deletedOrders: () => request("GET", "/orders/deleted"),
+    deleteOrder: (id, version) => request("DELETE", `/orders/${id}` + qs({ version })),
+    restoreOrder: (id) => request("POST", `/orders/${id}/restore`),
+    deletedStaff: () => request("GET", "/staff/deleted"),
+    deleteStaff: (id, version) => request("DELETE", `/staff/${id}` + qs({ version })),
+    restoreStaff: (id) => request("POST", `/staff/${id}/restore`),
+
     settings: () => request("GET", "/settings"),
     saveSettings: (body) => request("PUT", "/settings", body),
     exportJson: () => request("GET", "/export"),

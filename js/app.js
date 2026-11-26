@@ -53,6 +53,7 @@ function renderAll() {
   renderOrders();
   renderCustomers();
   renderStaff();
+  renderDeletedRecords();
   renderFinance();
   renderReports();
   renderSettings();
@@ -80,6 +81,8 @@ function mapOrder(o) {
     uuid: o.id,
     version: o.version,
     customer_id: o.customer_id,
+    // مشتری حذف‌شده: سفارش دیده می‌شود ولی تا بازگردانی مشتری قابل ویرایش و تغییر وضعیت نیست
+    customer_deleted: Boolean(o.customer_deleted),
     id: o._pending ? "در صف همگام‌سازی" : "۱۴۰۵-" + toFaDigits(pad2(o.order_no).padStart(3, "0")),
     customer: o.customer_name,
     type: o.type,
@@ -93,11 +96,20 @@ function mapOrder(o) {
 
 // داده‌ی خام سرور (شکل پاسخ API)
 async function fetchRaw() {
-  const [cust, ords, staff, txs, settings, deleted] = await Promise.all([
+  // فهرست حذف‌شده‌ها: نبود اتصال خطا است؛ خطای دیگر (مثلاً ۴۰۳ برای غیرمدیر) یعنی فهرست خالی
+  const optional = (p) => p.catch((err) => (Sync.isNetworkError(err) ? Promise.reject(err) : { items: [] }));
+  const [cust, ords, staff, txs, settings, deleted, custDel, ordDel, staffDel] = await Promise.all([
     Api.customers(), Api.orders(), Api.staff(), Api.transactions(), Api.settings(),
-    Api.deletedTransactions().catch((err) => (Sync.isNetworkError(err) ? Promise.reject(err) : { items: [] })),
+    optional(Api.deletedTransactions()),
+    optional(Api.deletedCustomers()),
+    optional(Api.deletedOrders()),
+    optional(Api.deletedStaff()),
   ]);
-  return { customers: cust.items, orders: ords.items, staff: staff.items, transactions: txs.items, deletedTransactions: deleted.items, settings };
+  return {
+    customers: cust.items, orders: ords.items, staff: staff.items, transactions: txs.items,
+    deletedTransactions: deleted.items, deletedCustomers: custDel.items, deletedOrders: ordDel.items,
+    deletedStaff: staffDel.items, settings,
+  };
 }
 
 let offlineMode = false;
@@ -129,6 +141,7 @@ function applyRaw(d) {
   state.orders = orders;
   state.customers = d.customers.map((c) => ({
     uuid: c.id,
+    version: c.version,
     name: c.name,
     phone: toFaDigits(c.phone || ""),
     count: c.order_count,
@@ -137,7 +150,17 @@ function applyRaw(d) {
     note: c.note || "",
   }));
   state.staff = d.staff.map((s) => ({
-    id: s.id, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), active: s.active,
+    id: s.id, version: s.version, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), active: s.active,
+  }));
+  // حذف‌شده‌ها فقط برای بازگردانی‌اند و در جمع‌ها و فهرست اصلی نیستند
+  state.deletedCustomers = (d.deletedCustomers || []).map((c) => ({
+    uuid: c.id, version: c.version, name: c.name, phone: toFaDigits(c.phone || ""), deletedAt: faDate(String(c.deleted_at).slice(0, 10)),
+  }));
+  state.deletedOrders = (d.deletedOrders || []).map((o) => ({
+    ...mapOrder(o), deletedAt: faDate(String(o.deleted_at).slice(0, 10)),
+  }));
+  state.deletedStaff = (d.deletedStaff || []).map((s) => ({
+    id: s.id, name: s.name, role: s.role_title, phone: toFaDigits(s.phone || ""), deletedAt: faDate(String(s.deleted_at).slice(0, 10)),
   }));
   state.transactions = d.transactions.map((t) => ({
     id: t.id, date: faDate(t.occurred_on), kind: t.kind, category: t.category, amount: t.amount, note: t.note,
@@ -542,7 +565,9 @@ function renderOrders() {
           <td>${esc(o.created)}</td>
           <td>${esc(o.due)}</td>
           <td><span class="status ${o.status}">${ORDER_STATUS[o.status]}</span></td>
-          <td><button class="dots" title="تغییر وضعیت" data-status-index="${idx}">•••</button></td>
+          <td>${o.customer_deleted
+            ? '<span class="muted" title="تا بازگردانی مشتری قابل ویرایش نیست">مشتری حذف شده</span>'
+            : `<button class="dots" title="تغییر وضعیت" data-status-index="${idx}">•••</button>${REMOTE ? ` <button class="chip" data-delete-order="${esc(o.uuid)}">حذف</button>` : ""}`}</td>
         </tr>`;
       })
       .join("") || '<tr><td colspan="8">سفارشی با این مشخصات پیدا نشد.</td></tr>';
@@ -551,6 +576,10 @@ function renderOrders() {
 async function changeOrderStatus(idx) {
   const o = state.orders[idx];
   if (!o) return;
+  if (o.customer_deleted) {
+    toast("مشتری این سفارش حذف شده است؛ ابتدا مشتری را بازگردانید.");
+    return;
+  }
   const to = NEXT_STATUS[o.status];
   if (REMOTE) {
     // نسخه‌ی دیده‌شده (با تغییرات وضعیت در صف) همراه تغییر می‌رود؛ اگر سرور جلوتر باشد، ۴۰۹ و بدون بازنویسی
@@ -583,7 +612,7 @@ function renderCustomers() {
           <td>${toFaDigits(c.count)}</td>
           <td>${esc(c.last)}</td>
           <td><span class="status ${stateClass}">${esc(c.state)}</span></td>
-          <td><button class="dots" data-detail="${idx}">•••</button></td>
+          <td><button class="dots" data-detail="${idx}">•••</button>${REMOTE && c.uuid ? ` <button class="chip" data-delete-customer="${esc(c.uuid)}">حذف</button>` : ""}</td>
         </tr>`;
       })
       .join("") || '<tr><td colspan="7">مشتری پیدا نشد.</td></tr>';
@@ -622,7 +651,7 @@ function renderStaff() {
           <td>${esc(s.role)}</td>
           <td>${esc(s.phone)}</td>
           <td><span class="status ${s.active ? "delivered" : "waiting"}">${s.active ? "فعال" : "غیرفعال"}</span></td>
-          <td><button class="chip" data-toggle-staff="${esc(s.id)}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button></td>
+          <td><button class="chip" data-toggle-staff="${esc(s.id)}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button>${REMOTE ? ` <button class="chip" data-delete-staff="${esc(s.id)}">حذف</button>` : ""}</td>
         </tr>`
       )
       .join("") || '<tr><td colspan="6">همکاری ثبت نشده است.</td></tr>';
@@ -698,6 +727,91 @@ function renderDeletedTransactions() {
         </tr>`
     )
     .join("");
+}
+
+/* ---------- حذف و بازگردانی مشتری، سفارش و همکار (فقط حالت سرور) ----------
+   این عملیات مستقیم به سرور می‌روند و در صف آفلاین نمی‌مانند؛ بدون اتصال انجام نمی‌شوند. */
+
+function renderDeletedRecords() {
+  const show = (wrap, count, body, rows, rowHtml) => {
+    $(wrap).hidden = !REMOTE || rows.length === 0;
+    $(count).textContent = toFaDigits(String(rows.length));
+    $(body).innerHTML = rows.map(rowHtml).join("");
+  };
+  show("#custDeletedWrap", "#custDeletedCount", "#custDeletedBody", REMOTE ? state.deletedCustomers || [] : [],
+    (c) => `<tr>
+          <td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.deletedAt)}</td>
+          <td><button class="chip" data-restore-customer="${esc(c.uuid)}">بازگردانی</button></td>
+        </tr>`);
+  show("#orderDeletedWrap", "#orderDeletedCount", "#orderDeletedBody", REMOTE ? state.deletedOrders || [] : [],
+    (o) => `<tr>
+          <td>${esc(o.id)}</td><td>${esc(o.customer)}</td><td>${ORDER_TYPE[o.type] ?? ""}</td><td>${esc(o.deletedAt)}</td>
+          <td><button class="chip" data-restore-order="${esc(o.uuid)}">بازگردانی</button></td>
+        </tr>`);
+  show("#staffDeletedWrap", "#staffDeletedCount", "#staffDeletedBody", REMOTE ? state.deletedStaff || [] : [],
+    (s) => `<tr>
+          <td>${esc(s.name)}</td><td>${esc(s.role)}</td><td>${esc(s.deletedAt)}</td>
+          <td><button class="chip" data-restore-staff="${esc(s.id)}">بازگردانی</button></td>
+        </tr>`);
+}
+
+function requireOnline(action) {
+  if (offlineMode) {
+    toast(`برای ${action} به اینترنت وصل باشید.`);
+    return false;
+  }
+  return true;
+}
+
+// اجرای مستقیم یک عملیات سرور؛ پیام خطا همان متن فارسی سرور است
+async function runDirect(action, okMsg) {
+  try {
+    await action();
+    await loadRemote();
+    renderAll();
+    toast(okMsg);
+  } catch (err) {
+    if (err.status === 401) {
+      showGate();
+      toast("نشست شما پایان یافته است؛ دوباره وارد شوید.");
+    } else if (Sync.isNetworkError(err)) {
+      toast("اتصال به سرور برقرار نشد؛ این عملیات انجام نشد.");
+    } else {
+      toast(err.message || "عملیات انجام نشد.");
+    }
+  }
+}
+
+async function deleteCustomerRecord(id) {
+  const c = state.customers.find((x) => x.uuid === id);
+  if (!c || !requireOnline("حذف مشتری")) return;
+  if (!confirm(`مشتری «${c.name}» حذف شود؟ سفارش‌هایش حذف نمی‌شوند و از بخش «حذف‌شده‌ها» بازگردانی می‌شود.`)) return;
+  await runDirect(() => Api.deleteCustomer(id, c.version), "مشتری حذف شد.");
+}
+
+async function deleteOrderRecord(id) {
+  const o = state.orders.find((x) => x.uuid === id);
+  if (!o || !requireOnline("حذف سفارش")) return;
+  if (!confirm("این سفارش حذف شود؟ از بخش «سفارش‌های حذف‌شده» بازگردانی می‌شود.")) return;
+  await runDirect(() => Api.deleteOrder(id, o.version), "سفارش حذف شد.");
+}
+
+async function deleteStaffRecord(id) {
+  const s = state.staff.find((x) => String(x.id) === String(id));
+  if (!s || !requireOnline("حذف همکار")) return;
+  if (!confirm(`همکار «${s.name}» حذف شود؟ اگر حساب ورود به او متصل باشد، ورودش مسدود می‌شود.`)) return;
+  await runDirect(() => Api.deleteStaff(id, s.version), "همکار حذف شد.");
+}
+
+async function restoreRecord(kind, id) {
+  if (!requireOnline("بازگردانی")) return;
+  const actions = {
+    customer: [() => Api.restoreCustomer(id), "مشتری بازگردانده شد."],
+    order: [() => Api.restoreOrder(id), "سفارش بازگردانده شد."],
+    staff: [() => Api.restoreStaff(id), "همکار بازگردانده شد."],
+  };
+  const [action, okMsg] = actions[kind];
+  await runDirect(action, okMsg);
 }
 
 // حذف نرم: ردیف نگه داشته می‌شود تا تاریخچه‌ی مالی کامل بماند و بازگردانی ممکن باشد
@@ -1341,11 +1455,15 @@ function bindEvents() {
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => go(b.dataset.goto)));
 
   $("#ordersBody").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-delete-order]");
+    if (del) return deleteOrderRecord(del.dataset.deleteOrder);
     const btn = e.target.closest("[data-status-index]");
     if (btn) changeOrderStatus(+btn.dataset.statusIndex);
   });
 
   $("#customersBody").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-delete-customer]");
+    if (del) return deleteCustomerRecord(del.dataset.deleteCustomer);
     const detailBtn = e.target.closest("[data-detail]");
     const row = e.target.closest("[data-customer]");
     if (detailBtn) showCustomer(+detailBtn.dataset.detail);
@@ -1353,8 +1471,23 @@ function bindEvents() {
   });
 
   $("#staffBody").addEventListener("click", (e) => {
+    const del = e.target.closest("[data-delete-staff]");
+    if (del) return deleteStaffRecord(del.dataset.deleteStaff);
     const btn = e.target.closest("[data-toggle-staff]");
     if (btn) toggleStaff(btn.dataset.toggleStaff);
+  });
+
+  $("#custDeletedBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-restore-customer]");
+    if (btn) restoreRecord("customer", btn.dataset.restoreCustomer);
+  });
+  $("#orderDeletedBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-restore-order]");
+    if (btn) restoreRecord("order", btn.dataset.restoreOrder);
+  });
+  $("#staffDeletedBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-restore-staff]");
+    if (btn) restoreRecord("staff", btn.dataset.restoreStaff);
   });
 
   $("#txBody").addEventListener("click", (e) => {

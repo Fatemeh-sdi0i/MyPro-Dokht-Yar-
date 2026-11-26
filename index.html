@@ -89,6 +89,10 @@
           <div class="filter-group"><b>نوع سفارش</b><label><input type="checkbox" name="kind" value="sewing" checked> دوخت لباس</label><label><input type="checkbox" name="kind" value="repair" checked> تعمیرات</label></div><button class="secondary-btn" id="resetFilters">پاک کردن فیلترها</button>
         </aside>
       </div>
+      <details class="panel table-panel tx-deleted" id="orderDeletedWrap" hidden>
+        <summary>سفارش‌های حذف‌شده (<span id="orderDeletedCount">۰</span>)</summary>
+        <div class="table-wrap"><table><thead><tr><th>شماره سفارش</th><th>مشتری</th><th>نوع</th><th>تاریخ حذف</th><th>عملیات</th></tr></thead><tbody id="orderDeletedBody"></tbody></table></div>
+      </details>
     </section>
 
     <section class="page" id="customers">
@@ -101,6 +105,10 @@
         </section>
         <aside class="panel customer-detail" id="customerDetail"><h3>مشخصات مشتری</h3><div class="detail-empty">برای مشاهده اطلاعات، یک مشتری را انتخاب کنید.</div></aside>
       </div>
+      <details class="panel table-panel tx-deleted" id="custDeletedWrap" hidden>
+        <summary>مشتریان حذف‌شده (<span id="custDeletedCount">۰</span>)</summary>
+        <div class="table-wrap"><table><thead><tr><th>مشتری</th><th>شماره تماس</th><th>تاریخ حذف</th><th>عملیات</th></tr></thead><tbody id="custDeletedBody"></tbody></table></div>
+      </details>
     </section>
 
     <section class="page" id="coworkers">
@@ -112,6 +120,10 @@
       <section class="panel table-panel">
         <div class="table-wrap"><table><thead><tr><th>همکار</th><th>نام</th><th>نقش</th><th>شماره تماس</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody id="staffBody"></tbody></table></div>
       </section>
+      <details class="panel table-panel tx-deleted" id="staffDeletedWrap" hidden>
+        <summary>همکاران حذف‌شده (<span id="staffDeletedCount">۰</span>)</summary>
+        <div class="table-wrap"><table><thead><tr><th>همکار</th><th>نقش</th><th>تاریخ حذف</th><th>عملیات</th></tr></thead><tbody id="staffDeletedBody"></tbody></table></div>
+      </details>
     </section>
 
     <section class="page" id="finance">
