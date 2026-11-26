@@ -123,7 +123,7 @@ test('مشتری حذف‌شده: سفارش‌ها، تاریخچه‌ی وضع
   const removed = (await call('POST', '/api/v1/orders', { customer_id: c.id, type: 'repair', description: 'زیپ', price: 20000 })).json();
   await call('DELETE', `/api/v1/orders/${removed.id}?version=${removed.version}`);
   const logBefore = (await db.query('SELECT count(*)::int AS n FROM order_status_log WHERE order_id = $1', [active.id])).rows[0].n;
-  assert.equal(logBefore, 1, 'یک تغییر وضعیت ثبت شده');
+  assert.equal(logBefore, 2, 'ثبت ایجاد سفارش و یک تغییر وضعیت');
 
   assert.equal((await call('DELETE', `/api/v1/customers/${c.id}?version=${c.version}`)).statusCode, 200);
 
