@@ -1,4 +1,5 @@
 const { normalizePhone, isoDate, HttpError, existingOwned, isIdRace } = require('../util');
+const { withTx } = require('../db');
 const { buildExport } = require('../export');
 const { replaceShopData } = require('../restore');
 
@@ -6,6 +7,8 @@ const requireAdmin = async (req) => {
   if (req.user.role !== 'admin') throw new HttpError(403, 'forbidden', 'این کار فقط برای مدیر مجاز است');
 };
 const idParam = { type: 'object', properties: { id: { type: 'string', format: 'uuid' } } };
+const VERSION_QUERY = { type: 'object', properties: { version: { type: 'integer', minimum: 1 } } };
+const staffVersionConflict = () => new HttpError(409, 'version_conflict', 'این همکار هم‌زمان تغییر کرده است');
 
 module.exports = async function businessRoutes(app, { db }) {
   // ---------- همکاران ----------
@@ -96,10 +99,65 @@ module.exports = async function businessRoutes(app, { db }) {
     return staffOut(rows[0]);
   });
 
-  app.delete('/staff/:id', { preHandler: requireAdmin, schema: { params: idParam } }, async (req) => {
-    await loadStaff(req.user.shop_id, req.params.id);
-    await db.query('UPDATE staff SET deleted_at = now() WHERE id = $1 AND shop_id = $2', [req.params.id, req.user.shop_id]);
+  // فهرست همکاران حذف‌شده (فقط مدیر)؛ پیش از /staff/:id تعریف می‌شود
+  app.get('/staff/deleted', { preHandler: requireAdmin }, async (req) => {
+    const { rows } = await db.query(
+      'SELECT * FROM staff WHERE shop_id = $1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 500',
+      [req.user.shop_id]
+    );
+    return { items: rows.map((s) => ({ ...staffOut(s), deleted_at: s.deleted_at })) };
+  });
+
+  // حذف نرم همکار. اگر حساب ورودِ متصل به او باشد، همان لحظه مسدود می‌شود (حساب و سوابق حذف نمی‌شوند).
+  // اگر version فرستاده شود و با نسخه‌ی فعلی نخواند، ۴۰۹ و بدون تغییر.
+  app.delete('/staff/:id', {
+    preHandler: requireAdmin,
+    schema: { params: idParam, querystring: VERSION_QUERY },
+  }, async (req) => {
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    const expected = req.query.version;
+    const current = await loadStaff(shopId, id);
+    if (expected !== undefined && expected !== current.version) throw staffVersionConflict();
+    await withTx(db, async (tx) => {
+      const { rows } = await tx.query(
+        `UPDATE staff SET deleted_at = now()
+          WHERE id = $1 AND shop_id = $2 AND deleted_at IS NULL AND ($3::int IS NULL OR version = $3)
+          RETURNING id`,
+        [id, shopId, expected ?? null]
+      );
+      if (!rows[0]) throw staffVersionConflict();
+      // زمان مسدودسازی همان deleted_at همین ردیف است؛ بازگردانی فقط همین مسدودسازی را برمی‌دارد
+      await tx.query(
+        `UPDATE users u SET disabled_at = s.deleted_at
+           FROM staff s
+          WHERE s.id = $1 AND s.shop_id = $2 AND u.id = s.user_id AND u.disabled_at IS NULL`,
+        [id, shopId]
+      );
+    });
     return { ok: true };
+  });
+
+  // بازگردانی همکار و برداشتن مسدودسازی ورود، فقط اگر همان حذف آن را مسدود کرده باشد
+  app.post('/staff/:id/restore', { preHandler: requireAdmin, schema: { params: idParam } }, async (req) => {
+    const shopId = req.user.shop_id;
+    const id = req.params.id;
+    await withTx(db, async (tx) => {
+      const { rows } = await tx.query(
+        'SELECT id FROM staff WHERE id = $1 AND shop_id = $2 AND deleted_at IS NOT NULL FOR UPDATE',
+        [id, shopId]
+      );
+      if (!rows[0]) throw new HttpError(404, 'not_found', 'همکار حذف‌شده‌ای با این شناسه پیدا نشد');
+      await tx.query(
+        `UPDATE users u SET disabled_at = NULL
+           FROM staff s
+          WHERE s.id = $1 AND u.id = s.user_id AND u.disabled_at = s.deleted_at`,
+        [id]
+      );
+      await tx.query('UPDATE staff SET deleted_at = NULL WHERE id = $1', [id]);
+    });
+    const { rows } = await db.query('SELECT * FROM staff WHERE id = $1 AND shop_id = $2', [id, shopId]);
+    return staffOut(rows[0]);
   });
 
   // ---------- امور مالی ----------
