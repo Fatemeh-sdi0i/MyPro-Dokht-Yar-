@@ -967,6 +967,39 @@ async function exportData() {
   try { payload = await backupPayload(); }
   catch (err) { toast(err.message || "دانلود پشتیبان انجام نشد"); return; }
   downloadText("dokhtyar-backup.json", JSON.stringify(payload, null, 2));
+  noteBackupDone();
+}
+
+// زمان آخرین پشتیبان فقط در حالت محلی ثبت و یادآوری می‌شود
+function noteBackupDone() {
+  if (REMOTE) return;
+  LocalStore.markBackupDone();
+  renderBackupReminder();
+}
+
+function localDateIso(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// یادآور پشتیبان: تاریخ آخرین پشتیبان و هشدار بعد از آستانه (فقط حالت محلی)
+function renderBackupReminder() {
+  const el = $("#backupReminder");
+  if (!el || REMOTE) return;
+  const s = LocalStore.backupReminderState();
+  let text;
+  if (s.lastBackupAt === null) {
+    text = "هنوز هیچ پشتیبانی از داده‌های این مرورگر گرفته نشده است. همین حالا یک پشتیبان JSON دانلود کنید.";
+  } else {
+    const when = faDate(localDateIso(s.lastBackupAt));
+    text = s.daysSince === 0
+      ? `آخرین پشتیبان: امروز (${when}).`
+      : `آخرین پشتیبان: ${when} (${toFaDigits(String(s.daysSince))} روز پیش).`;
+    if (s.due) text += ` بیش از ${toFaDigits(String(s.thresholdDays))} روز گذشته است؛ یک پشتیبان تازه بگیرید.`;
+  }
+  el.textContent = text;
+  el.hidden = false;
 }
 
 function setBackupMsg(text, isError) {
@@ -990,6 +1023,7 @@ async function exportEncryptedData() {
     const payload = await backupPayload();
     const text = await BackupCrypto.encryptBackup(JSON.stringify(payload, null, 2), pw);
     downloadText("dokhtyar-backup-encrypted.json", text);
+    noteBackupDone();
     $("#backupPassword").value = "";
     $("#backupPassword2").value = "";
     setBackupMsg("فایل رمزشده دانلود شد. گذرواژه را جای امنی نگه دارید؛ بدون آن این فایل قابل بازیابی نیست.", false);
@@ -1594,6 +1628,7 @@ async function bootLocal() {
     }
   });
   LocalStore.subscribe(renderSaveIndicator); // وضعیت واقعی نوشتن؛ «ذخیره شد» فقط بعد از بازخوانی موفق
+  renderBackupReminder();
   $("#recoveryImport").addEventListener("click", importLegacyData);
   $("#recoveryUndo").addEventListener("click", undoRecovery);
   if (st.locked) {
