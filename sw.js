@@ -8,7 +8,7 @@
  * هنگام انتشار نسخه‌ی جدید، مقدار VERSION را افزایش دهید تا کش قدیمی حذف شود.
  * مسیرها نسبی هستند تا روی GitHub Pages زیرمسیر (/repo/) هم کار کنند.
  */
-const VERSION = "v3.2.15";
+const VERSION = "v3.2.16";
 const CACHE = `dokhtyar-${VERSION}`;
 
 const APP_SHELL = [

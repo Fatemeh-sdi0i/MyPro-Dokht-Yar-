@@ -280,6 +280,30 @@
   function isReady() { return status.ready && !status.locked; }
   function getStatus() { return { ...status }; }
 
+  /* ---------- ماندگاری داده (navigator.storage.persist) ----------
+     درخواست ماندگاری فقط از مرورگر اجازه می‌گیرد؛ داده یا کلید را تغییر نمی‌دهد.
+     نتیجه همیشه یکی از سه حالت است و هیچ‌وقت خطا به برنامه منتقل نمی‌شود. */
+  let persistInfo = { checked: false, supported: false, persisted: false };
+
+  async function requestPersistence() {
+    const sm = root.navigator && root.navigator.storage;
+    if (!sm || typeof sm.persist !== "function") {
+      persistInfo = { checked: true, supported: false, persisted: false };
+      return { ...persistInfo };
+    }
+    try {
+      const already = typeof sm.persisted === "function" ? await sm.persisted() : false;
+      const persisted = already === true ? true : (await sm.persist()) === true;
+      persistInfo = { checked: true, supported: true, persisted };
+    } catch (err) {
+      // خطای مرورگر نباید برنامه را متوقف کند؛ فقط وضعیت «اجازه داده نشد» ثبت می‌شود
+      persistInfo = { checked: true, supported: true, persisted: false };
+    }
+    return { ...persistInfo };
+  }
+
+  function getPersistence() { return { ...persistInfo }; }
+
   /* ---------- نوشتن ---------- */
   // ترتیب نوشتن‌ها حفظ می‌شود؛ هر نوشتن با بازخوانی رمزگشایی تأیید می‌شود
   function save(state) {
@@ -541,11 +565,13 @@
     reset() {
       generation += 1; pending = 0; busyOps = 0; failVault = false; vaultMode = DEFAULT_VAULT_MODE; keyCache = null;
       chain = Promise.resolve(); status = freshStatus(); lastSavedAt = null; lastError = null; listeners = new Set();
+      persistInfo = { checked: false, supported: false, persisted: false };
     },
   };
 
   root.LocalStore = {
     init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
+    requestPersistence, getPersistence,
     recoveryInfo, importLegacy, swapWithBackup, restoreBackup, restoreBlockedReason, subscribe, getWriteStatus: writeStatus,
     V2_KEY, V3_KEY, BACKUP_KEY, SWAP_KEY, UNREADABLE, testing,
   };
