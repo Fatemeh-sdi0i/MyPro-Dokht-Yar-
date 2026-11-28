@@ -188,6 +188,10 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:restore
 
+      - name: Run local soft delete and restore browser test (customers, orders, staff; no server)
+        working-directory: tests/e2e
+        run: npm run test:local-undo
+
       - name: Run local date validation and monthly chart browser test
         working-directory: tests/e2e
         run: npm run test:dashboard

@@ -453,20 +453,38 @@ async function logout() {
   location.reload();
 }
 
+/* ---------- حذف نرم در حالت محلی ----------
+   در حالت محلی رکوردها حذف فیزیکی نمی‌شوند؛ فیلد deletedAt تنظیم می‌شود و بازگردانی آن را پاک می‌کند.
+   نبود این فیلد یعنی رکورد فعال است، پس داده‌های قدیمی و پشتیبان‌های قبلی بدون تغییر کار می‌کنند.
+   سفارش‌ها در حالت محلی با نام مشتری به او وصل‌اند؛ مشتری حذف‌شده وقتی است که همه‌ی رکوردهای آن نام حذف‌شده باشند. */
+function liveOrders() { return state.orders.filter((o) => !o.deletedAt); }
+function liveCustomers() { return state.customers.filter((c) => !c.deletedAt); }
+function liveStaff() { return state.staff.filter((s) => !s.deletedAt); }
+
+function localCustomerDeleted(name) {
+  const same = state.customers.filter((c) => c.name === name);
+  return same.length > 0 && same.every((c) => c.deletedAt);
+}
+
+// سفارش قفل است (فقط نمایش و بدون تغییر وضعیت) وقتی مشتری‌اش حذف شده باشد
+function isOrderLocked(o) {
+  return REMOTE ? Boolean(o.customer_deleted) : localCustomerDeleted(o.customer);
+}
+
 /* ---------- داشبورد ---------- */
 
 function countByStatus(status) {
-  return state.orders.filter((o) => o.status === status).length;
+  return liveOrders().filter((o) => o.status === status).length;
 }
 
 function deliveredRevenue() {
-  return state.orders.filter((o) => o.status === "delivered").reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+  return liveOrders().filter((o) => o.status === "delivered").reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 }
 
 // درآمد تحویل‌شده به تفکیک ماه شمسی تحویل (تاریخ تحویل). سفارش بدون تاریخ تحویل فقط در مجموع است.
 function monthlyRevenue(year) {
   const byMonth = Array(13).fill(0);
-  for (const o of state.orders) {
+  for (const o of liveOrders()) {
     if (o.status !== "delivered") continue;
     const parts = toEnDigits(o.due || "").split("/");
     if (parts.length !== 3 || parseInt(parts[0], 10) !== year) continue;
@@ -496,7 +514,7 @@ function renderMonthlyChart() {
     + `<g fill="#fff0df" stroke="#fff" stroke-width="2">${pts.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="4"/>`).join("")}</g>`;
   $("#monthlyLabels").innerHTML = range.map((m) => `<span>${esc(PERSIAN_MONTHS[m - 1])}</span>`).join("");
   const total = values.reduce((a, b) => a + b, 0);
-  const undated = state.orders.some((o) => o.status === "delivered" && !(parseInt(toEnDigits(o.due || "").split("/")[0], 10) === year));
+  const undated = liveOrders().some((o) => o.status === "delivered" && !(parseInt(toEnDigits(o.due || "").split("/")[0], 10) === year));
   const note = $("#monthlyNote");
   note.hidden = !(total === 0 || undated);
   note.textContent = total === 0
@@ -521,7 +539,7 @@ function dueLabel(due) {
 }
 
 function renderUpcoming() {
-  const rows = state.orders
+  const rows = liveOrders()
     .filter((o) => o.status !== "delivered")
     .slice(0, 3)
     .map(
@@ -547,7 +565,7 @@ function renderOrders() {
   const status = $('input[name="status"]:checked')?.value || "all";
   const kinds = $$('input[name="kind"]:checked').map((x) => x.value);
 
-  const filtered = state.orders.filter(
+  const filtered = liveOrders().filter(
     (o) =>
       matchesOrderFilter(o) &&
       (status === "all" || o.status === status) &&
@@ -567,9 +585,9 @@ function renderOrders() {
           <td>${esc(o.created)}</td>
           <td>${esc(o.due)}</td>
           <td><span class="status ${o.status}">${ORDER_STATUS[o.status]}</span></td>
-          <td>${o.customer_deleted
+          <td>${isOrderLocked(o)
             ? '<span class="muted" title="تا بازگردانی مشتری قابل ویرایش نیست">مشتری حذف شده</span>'
-            : `<button class="dots" title="تغییر وضعیت" data-status-index="${idx}">•••</button>${REMOTE ? ` <button class="chip" data-delete-order="${esc(o.uuid)}">حذف</button>` : ""}`}</td>
+            : `<button class="dots" title="تغییر وضعیت" data-status-index="${idx}">•••</button> <button class="chip" data-delete-order="${esc(REMOTE ? o.uuid : o.id)}">حذف</button>`}</td>
         </tr>`;
       })
       .join("") || '<tr><td colspan="8">سفارشی با این مشخصات پیدا نشد.</td></tr>';
@@ -577,8 +595,8 @@ function renderOrders() {
 
 async function changeOrderStatus(idx) {
   const o = state.orders[idx];
-  if (!o) return;
-  if (o.customer_deleted) {
+  if (!o || o.deletedAt) return;
+  if (isOrderLocked(o)) {
     toast("مشتری این سفارش حذف شده است؛ ابتدا مشتری را بازگردانید.");
     return;
   }
@@ -600,7 +618,7 @@ async function changeOrderStatus(idx) {
 
 function renderCustomers() {
   const q = ($("#customerSearch")?.value || "").trim();
-  const rows = state.customers.filter((c) => !q || (c.name + c.phone).includes(q));
+  const rows = liveCustomers().filter((c) => !q || (c.name + c.phone).includes(q));
 
   $("#customersBody").innerHTML =
     rows
@@ -614,12 +632,12 @@ function renderCustomers() {
           <td>${toFaDigits(c.count)}</td>
           <td>${esc(c.last)}</td>
           <td><span class="status ${stateClass}">${esc(c.state)}</span></td>
-          <td><button class="dots" data-detail="${idx}">•••</button>${REMOTE && c.uuid ? ` <button class="chip" data-delete-customer="${esc(c.uuid)}">حذف</button>` : ""}</td>
+          <td><button class="dots" data-detail="${idx}">•••</button> <button class="chip" data-delete-customer="${esc(REMOTE ? c.uuid : idx)}">حذف</button></td>
         </tr>`;
       })
       .join("") || '<tr><td colspan="7">مشتری پیدا نشد.</td></tr>';
 
-  $("#customerCount").textContent = toFaDigits(state.customers.length);
+  $("#customerCount").textContent = toFaDigits(liveCustomers().length);
 }
 
 function showCustomer(i) {
@@ -641,11 +659,12 @@ function showCustomer(i) {
 /* ---------- همکاران ---------- */
 
 function renderStaff() {
-  const active = state.staff.filter((s) => s.active).length;
-  $("#staffCount").textContent = toFaDigits(state.staff.length);
+  const live = liveStaff();
+  const active = live.filter((s) => s.active).length;
+  $("#staffCount").textContent = toFaDigits(live.length);
   $("#staffActive").textContent = toFaDigits(active);
   $("#staffBody").innerHTML =
-    state.staff
+    live
       .map(
         (s) => `<tr>
           <td><span class="mini-avatar">${esc(s.name[0])}</span></td>
@@ -653,7 +672,7 @@ function renderStaff() {
           <td>${esc(s.role)}</td>
           <td>${esc(s.phone)}</td>
           <td><span class="status ${s.active ? "delivered" : "waiting"}">${s.active ? "فعال" : "غیرفعال"}</span></td>
-          <td><button class="chip" data-toggle-staff="${esc(s.id)}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button>${REMOTE ? ` <button class="chip" data-delete-staff="${esc(s.id)}">حذف</button>` : ""}</td>
+          <td><button class="chip" data-toggle-staff="${esc(s.id)}">${s.active ? "غیرفعال کردن" : "فعال کردن"}</button> <button class="chip" data-delete-staff="${esc(s.id)}">حذف</button></td>
         </tr>`
       )
       .join("") || '<tr><td colspan="6">همکاری ثبت نشده است.</td></tr>';
@@ -731,26 +750,45 @@ function renderDeletedTransactions() {
     .join("");
 }
 
-/* ---------- حذف و بازگردانی مشتری، سفارش و همکار (فقط حالت سرور) ----------
-   این عملیات مستقیم به سرور می‌روند و در صف آفلاین نمی‌مانند؛ بدون اتصال انجام نمی‌شوند. */
+/* ---------- حذف و بازگردانی مشتری، سفارش و همکار ----------
+   حالت محلی: حذف نرم در همین مرورگر (بدون اتصال).
+   حالت سرور: مستقیم به سرور می‌روند و در صف آفلاین نمی‌مانند؛ بدون اتصال انجام نمی‌شوند. */
+
+// حذف‌شده‌های حالت محلی به همان شکل فهرست سرور تبدیل می‌شوند تا قالب‌های بازگردانی یکی بمانند
+function localDeletedRecords() {
+  const day = (iso) => faDate(String(iso).slice(0, 10));
+  const newestFirst = (arr) => arr.slice().reverse();
+  return {
+    customers: newestFirst(state.customers.map((c, i) => ({ c, i })).filter((x) => x.c.deletedAt)).map(({ c, i }) => ({
+      uuid: String(i), name: c.name, phone: c.phone, deletedAt: day(c.deletedAt),
+    })),
+    orders: newestFirst(state.orders.filter((o) => o.deletedAt)).map((o) => ({
+      uuid: o.id, id: o.id, customer: o.customer, type: o.type, deletedAt: day(o.deletedAt),
+    })),
+    staff: newestFirst(state.staff.filter((s) => s.deletedAt)).map((s) => ({
+      id: s.id, name: s.name, role: s.role, deletedAt: day(s.deletedAt),
+    })),
+  };
+}
 
 function renderDeletedRecords() {
+  const local = REMOTE ? null : localDeletedRecords();
   const show = (wrap, count, body, rows, rowHtml) => {
-    $(wrap).hidden = !REMOTE || rows.length === 0;
+    $(wrap).hidden = rows.length === 0;
     $(count).textContent = toFaDigits(String(rows.length));
     $(body).innerHTML = rows.map(rowHtml).join("");
   };
-  show("#custDeletedWrap", "#custDeletedCount", "#custDeletedBody", REMOTE ? state.deletedCustomers || [] : [],
+  show("#custDeletedWrap", "#custDeletedCount", "#custDeletedBody", REMOTE ? state.deletedCustomers || [] : local.customers,
     (c) => `<tr>
           <td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td>${esc(c.deletedAt)}</td>
           <td><button class="chip" data-restore-customer="${esc(c.uuid)}">بازگردانی</button></td>
         </tr>`);
-  show("#orderDeletedWrap", "#orderDeletedCount", "#orderDeletedBody", REMOTE ? state.deletedOrders || [] : [],
+  show("#orderDeletedWrap", "#orderDeletedCount", "#orderDeletedBody", REMOTE ? state.deletedOrders || [] : local.orders,
     (o) => `<tr>
           <td>${esc(o.id)}</td><td>${esc(o.customer)}</td><td>${ORDER_TYPE[o.type] ?? ""}</td><td>${esc(o.deletedAt)}</td>
           <td><button class="chip" data-restore-order="${esc(o.uuid)}">بازگردانی</button></td>
         </tr>`);
-  show("#staffDeletedWrap", "#staffDeletedCount", "#staffDeletedBody", REMOTE ? state.deletedStaff || [] : [],
+  show("#staffDeletedWrap", "#staffDeletedCount", "#staffDeletedBody", REMOTE ? state.deletedStaff || [] : local.staff,
     (s) => `<tr>
           <td>${esc(s.name)}</td><td>${esc(s.role)}</td><td>${esc(s.deletedAt)}</td>
           <td><button class="chip" data-restore-staff="${esc(s.id)}">بازگردانی</button></td>
@@ -784,7 +822,22 @@ async function runDirect(action, okMsg) {
   }
 }
 
+// حالت محلی: حذف و بازگردانی نرم و بدون اتصال. تغییر فقط در همین مرورگر ذخیره می‌شود.
+function setLocalDeleted(record, deleted) {
+  record.deletedAt = deleted ? new Date().toISOString() : null;
+  persist();
+  renderAll();
+}
+
 async function deleteCustomerRecord(id) {
+  if (!REMOTE) {
+    const c = state.customers[Number(id)];
+    if (!c || c.deletedAt) return;
+    if (!confirm(`مشتری «${c.name}» حذف شود؟ سفارش‌هایش حذف نمی‌شوند و از بخش «حذف‌شده‌ها» بازگردانی می‌شود.`)) return;
+    setLocalDeleted(c, true);
+    toast("مشتری حذف شد. از بخش «حذف‌شده‌ها» می‌توانید بازگردانید.");
+    return;
+  }
   const c = state.customers.find((x) => x.uuid === id);
   if (!c || !requireOnline("حذف مشتری")) return;
   if (!confirm(`مشتری «${c.name}» حذف شود؟ سفارش‌هایش حذف نمی‌شوند و از بخش «حذف‌شده‌ها» بازگردانی می‌شود.`)) return;
@@ -792,6 +845,15 @@ async function deleteCustomerRecord(id) {
 }
 
 async function deleteOrderRecord(id) {
+  if (!REMOTE) {
+    const o = state.orders.find((x) => x.id === id);
+    if (!o || o.deletedAt) return;
+    if (isOrderLocked(o)) return toast("مشتری این سفارش حذف شده است؛ ابتدا مشتری را بازگردانید.");
+    if (!confirm("این سفارش حذف شود؟ از بخش «سفارش‌های حذف‌شده» بازگردانی می‌شود.")) return;
+    setLocalDeleted(o, true);
+    toast("سفارش حذف شد. از بخش «سفارش‌های حذف‌شده» می‌توانید بازگردانید.");
+    return;
+  }
   const o = state.orders.find((x) => x.uuid === id);
   if (!o || !requireOnline("حذف سفارش")) return;
   if (!confirm("این سفارش حذف شود؟ از بخش «سفارش‌های حذف‌شده» بازگردانی می‌شود.")) return;
@@ -799,6 +861,14 @@ async function deleteOrderRecord(id) {
 }
 
 async function deleteStaffRecord(id) {
+  if (!REMOTE) {
+    const s = state.staff.find((x) => String(x.id) === String(id));
+    if (!s || s.deletedAt) return;
+    if (!confirm(`همکار «${s.name}» حذف شود؟ از بخش «حذف‌شده‌ها» بازگردانی می‌شود.`)) return;
+    setLocalDeleted(s, true);
+    toast("همکار حذف شد. از بخش «حذف‌شده‌ها» می‌توانید بازگردانید.");
+    return;
+  }
   const s = state.staff.find((x) => String(x.id) === String(id));
   if (!s || !requireOnline("حذف همکار")) return;
   if (!confirm(`همکار «${s.name}» حذف شود؟ اگر حساب ورود به او متصل باشد، ورودش مسدود می‌شود.`)) return;
@@ -806,6 +876,16 @@ async function deleteStaffRecord(id) {
 }
 
 async function restoreRecord(kind, id) {
+  if (!REMOTE) {
+    // بازگردانی مشتری، سفارش‌هایش را خودکار برنمی‌گرداند؛ سفارش‌ها جدا بازگردانده می‌شوند (مانند سرور)
+    const target = kind === "customer" ? state.customers[Number(id)]
+      : kind === "order" ? state.orders.find((x) => x.id === id)
+      : state.staff.find((x) => String(x.id) === String(id));
+    if (!target || !target.deletedAt) return;
+    setLocalDeleted(target, false);
+    toast({ customer: "مشتری بازگردانده شد.", order: "سفارش بازگردانده شد.", staff: "همکار بازگردانده شد." }[kind]);
+    return;
+  }
   if (!requireOnline("بازگردانی")) return;
   const actions = {
     customer: [() => Api.restoreCustomer(id), "مشتری بازگردانده شد."],
@@ -857,7 +937,7 @@ async function restoreTransaction(id) {
 /* ---------- گزارش‌ها ---------- */
 
 function renderReports() {
-  const orders = state.orders;
+  const orders = liveOrders();
   const total = orders.length;
   const delivered = countByStatus("delivered");
   const revenue = deliveredRevenue();
@@ -1173,6 +1253,11 @@ async function submitOrder(e) {
   if (!customerName) { toast("نام مشتری را وارد کنید."); return; }
   const price = parseWholeAmount(d.get("price"));
   if (price === null) { toast("قیمت باید عدد صحیح و بدون اعشار باشد."); return; }
+  // حالت محلی: سفارش جدید برای مشتری حذف‌شده ثبت نمی‌شود تا قفل‌شده و بی‌صاحب نماند
+  if (!REMOTE && localCustomerDeleted(customerName)) {
+    toast("این مشتری حذف شده است؛ ابتدا او را از بخش «حذف‌شده‌ها» بازگردانید.");
+    return;
+  }
 
   if (REMOTE) {
     const dueIso = formDateToIso(d.get("due"));
