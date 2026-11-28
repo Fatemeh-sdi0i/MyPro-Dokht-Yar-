@@ -14,6 +14,7 @@
     "test:persistence": "node --test persistence.browser.test.js",
     "test:reminder": "node --test backup.reminder.browser.test.js",
     "test:local-undo": "node --test local.undo.browser.test.js",
+    "test:roundtrip": "node --test local.backup.roundtrip.browser.test.js",
     "test:unload": "node --test unload.server.test.js",
     "test:backup": "node --test backup.encrypted.test.js",
     "test:restore": "node --test restore.test.js",

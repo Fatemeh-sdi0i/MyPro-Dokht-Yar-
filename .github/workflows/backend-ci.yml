@@ -199,6 +199,10 @@ jobs:
         working-directory: tests/e2e
         run: npm run test:local-undo
 
+      - name: Run local backup round trip browser test (deleted records survive backup and restore)
+        working-directory: tests/e2e
+        run: npm run test:roundtrip
+
       - name: Run local date validation and monthly chart browser test
         working-directory: tests/e2e
         run: npm run test:dashboard
