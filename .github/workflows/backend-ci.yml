@@ -195,6 +195,9 @@ jobs:
       - name: Run local backup reminder browser test (last backup date, 7-day warning, no data in reminder key)
         working-directory: tests/e2e
         run: npm run test:reminder
+      - name: Run local soft delete and restore browser test (customers, orders, staff; no server)
+        working-directory: tests/e2e
+        run: npm run test:local-undo
 
       - name: Run local date validation and monthly chart browser test
         working-directory: tests/e2e
