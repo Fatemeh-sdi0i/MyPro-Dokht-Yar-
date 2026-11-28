@@ -833,6 +833,10 @@ async function deleteCustomerRecord(id) {
   if (!REMOTE) {
     const c = state.customers[Number(id)];
     if (!c || c.deletedAt) return;
+    // اگر مشتری فعال دیگری با همین نام باشد، سفارش‌ها به کدام یک تعلق دارند معلوم نیست؛ حذف انجام نمی‌شود
+    if (state.customers.some((x) => x !== c && x.name === c.name && !x.deletedAt)) {
+      return toast("چند مشتری فعال با این نام وجود دارد؛ حذف انجام نشد تا سفارش‌ها به اشتباه قفل نشوند.");
+    }
     if (!confirm(`مشتری «${c.name}» حذف شود؟ سفارش‌هایش حذف نمی‌شوند و از بخش «حذف‌شده‌ها» بازگردانی می‌شود.`)) return;
     setLocalDeleted(c, true);
     toast("مشتری حذف شد. از بخش «حذف‌شده‌ها» می‌توانید بازگردانید.");
@@ -1319,6 +1323,15 @@ async function submitCustomer(e) {
     return;
   }
 
+  // حالت محلی: نام، شناسه‌ی مشتری است. نام تکراری (حتی حذف‌شده) ثبت نمی‌شود تا سفارش‌های
+  // مشتری حذف‌شده به مشتری فعال تازه وصل نشوند.
+  const same = state.customers.find((c) => c.name === name);
+  if (same) {
+    toast(same.deletedAt
+      ? "یک مشتری حذف‌شده با همین نام وجود دارد؛ آن را از بخش «حذف‌شده‌ها» بازگردانید."
+      : "مشتری دیگری با همین نام ثبت شده است.");
+    return;
+  }
   state.customers.unshift({ name, phone: toFaDigits(phone), count: 0, last: "—", state: "فعال", note });
   persist();
   closeModal();

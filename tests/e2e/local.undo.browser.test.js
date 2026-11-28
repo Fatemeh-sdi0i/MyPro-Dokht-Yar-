@@ -167,6 +167,36 @@ test("ثبت سفارش جدید برای مشتری حذف‌شده پذیرف�
   assert.equal(await page.locator("#ordersBody tr").count(), rowsBefore, "هیچ سفارش جدیدی ثبت نشده است");
 });
 
+test("نام مشتری حذف‌شده دوباره ثبت نمی‌شود و سفارش‌های قفل‌شده باز نمی‌شوند", async () => {
+  const page = await openApp();
+  await nav(page, "customers");
+  await rowOf(page, "#customersBody", CUSTOMER).locator("[data-delete-customer]").click();
+  await waitGone(page, "#customersBody", CUSTOMER);
+
+  await page.click("#addCustomerBtn");
+  await page.fill('#customerForm input[name="name"]', CUSTOMER);
+  await page.fill('#customerForm input[name="phone"]', "09121234567");
+  await page.click('#customerForm button[type="submit"]');
+  await page.waitForFunction(() => document.querySelector("#toast").textContent.includes("حذف‌شده"), null, { timeout: 5000 });
+  assert.equal(await text(page, "#customerCount"), "۴", "مشتری تکراری اضافه نشد");
+  await waitHas(page, "#custDeletedBody", CUSTOMER);
+  await page.click('#customerForm [data-close]');
+
+  await nav(page, "orders");
+  const row = rowOf(page, "#ordersBody", ORDER);
+  await row.waitFor({ timeout: 5000 });
+  assert.match(await row.textContent(), /مشتری حذف شده/, "سفارش هنوز قفل است");
+
+  // نام تازه و یکتا همچنان ثبت می‌شود
+  await nav(page, "customers");
+  await page.click("#addCustomerBtn");
+  await page.fill('#customerForm input[name="name"]', "نام-تازه-آزمایشی");
+  await page.fill('#customerForm input[name="phone"]', "09129876543");
+  await page.click('#customerForm button[type="submit"]');
+  await waitHas(page, "#customersBody", "نام-تازه-آزمایشی");
+  assert.equal(await text(page, "#customerCount"), "۵");
+});
+
 test("پشتیبان JSON رکوردهای حذف‌شده را با زمان حذف نگه می‌دارد", async () => {
   const page = await openApp();
   await nav(page, "customers");
