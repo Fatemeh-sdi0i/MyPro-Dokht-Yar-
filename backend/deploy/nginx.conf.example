@@ -12,7 +12,8 @@ server {
     ssl_certificate     /etc/letsencrypt/live/example.ir/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.ir/privkey.pem;
 
-    client_max_body_size 64k;
+    # باید از سقف بدنه‌ی POST /import/replace در API (۲۰ مگابایت) بیشتر یا برابر باشد
+    client_max_body_size 25m;
 
     location / {
         proxy_pass http://127.0.0.1:3000;

@@ -10,8 +10,11 @@ set -euo pipefail
 : "${BACKUP_KEY_FILE:?BACKUP_KEY_FILE لازم است}"
 
 DB="dokhtyar_restore_check"
-BASE="${ADMIN_URL%/*}"
-TARGET="$BASE/$DB"
+# جدا کردن پارامترهای آدرس (مثلاً ?host=/var/run/postgresql) تا نام پایگاه درست عوض شود
+ADMIN_BASE="${ADMIN_URL%%\?*}"
+ADMIN_QUERY="${ADMIN_URL#"$ADMIN_BASE"}"
+BASE="${ADMIN_BASE%/*}"
+TARGET="$BASE/$DB$ADMIN_QUERY"
 
 psql "$ADMIN_URL" -q -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB"
 trap 'psql "$ADMIN_URL" -q -c "DROP DATABASE IF EXISTS $DB" >/dev/null' EXIT
