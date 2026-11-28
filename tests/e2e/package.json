@@ -12,6 +12,7 @@
     "test:encryption": "node --test encryption.test.js",
     "test:local-encryption": "node --test local-encryption.test.js",
     "test:persistence": "node --test persistence.browser.test.js",
+    "test:reminder": "node --test backup.reminder.browser.test.js",
     "test:unload": "node --test unload.server.test.js",
     "test:backup": "node --test backup.encrypted.test.js",
     "test:restore": "node --test restore.test.js",

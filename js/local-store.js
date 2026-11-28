@@ -303,6 +303,41 @@
   }
 
   function getPersistence() { return { ...persistInfo }; }
+  /* ---------- یادآور پشتیبان ----------
+     فقط زمان آخرین پشتیبان در کلید جدا نگه داشته می‌شود؛ هیچ محتوای داده، کلید یا نام مشتری در آن نیست.
+     پاک‌شدن یا خرابی این کلید فقط یادآور را بازنشانی می‌کند و به داده آسیبی نمی‌زند. */
+  const META_KEY = "dokhtyar.meta.v1";
+  const BACKUP_REMINDER_DAYS = 7;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function readMeta() {
+    try {
+      const raw = storage ? storage.getItem(META_KEY) : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  // بعد از دانلود موفق پشتیبان صدا زده می‌شود. خطا برنامه را متوقف نمی‌کند.
+  function markBackupDone(now = Date.now()) {
+    try {
+      if (!storage) return false;
+      storage.setItem(META_KEY, JSON.stringify({ lastBackupAt: now }));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function backupReminderState(now = Date.now()) {
+    const at = readMeta().lastBackupAt;
+    const valid = typeof at === "number" && Number.isFinite(at) && at > 0 && at <= now + DAY_MS;
+    if (!valid) return { lastBackupAt: null, daysSince: null, due: true, thresholdDays: BACKUP_REMINDER_DAYS };
+    const daysSince = Math.max(0, Math.floor((now - at) / DAY_MS));
+    return { lastBackupAt: at, daysSince, due: daysSince >= BACKUP_REMINDER_DAYS, thresholdDays: BACKUP_REMINDER_DAYS };
+  }
 
   /* ---------- نوشتن ---------- */
   // ترتیب نوشتن‌ها حفظ می‌شود؛ هر نوشتن با بازخوانی رمزگشایی تأیید می‌شود
@@ -572,6 +607,7 @@
   root.LocalStore = {
     init, save, isReady, getStatus, readPlain, deleteUnreadable, flush: () => chain, pendingCount,
     requestPersistence, getPersistence,
+    markBackupDone, backupReminderState, META_KEY,
     recoveryInfo, importLegacy, swapWithBackup, restoreBackup, restoreBlockedReason, subscribe, getWriteStatus: writeStatus,
     V2_KEY, V3_KEY, BACKUP_KEY, SWAP_KEY, UNREADABLE, testing,
   };
