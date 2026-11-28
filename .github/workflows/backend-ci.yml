@@ -48,7 +48,7 @@ jobs:
           node-version: 20
 
       - name: Run unit tests
-        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js tests/backup-validate.test.js tests/persistence.test.js
+        run: node --test --test-concurrency=1 tests/sync.test.js tests/jalali.test.js tests/local-store.test.js tests/backup-crypto.test.js tests/backup-validate.test.js tests/persistence.test.js tests/backup-reminder.test.js
 
   api:
     name: API tests (Fastify + PostgreSQL)
@@ -191,6 +191,10 @@ jobs:
       - name: Run local restore browser test (plaintext and encrypted, protected backup)
         working-directory: tests/e2e
         run: npm run test:restore
+
+      - name: Run local backup reminder browser test (last backup date, 7-day warning, no data in reminder key)
+        working-directory: tests/e2e
+        run: npm run test:reminder
 
       - name: Run local date validation and monthly chart browser test
         working-directory: tests/e2e
