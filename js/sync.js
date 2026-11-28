@@ -604,6 +604,10 @@
       staff: [...(raw.staff || [])],
       transactions: [...(raw.transactions || [])],
       deletedTransactions: [...(raw.deletedTransactions || [])],
+      // حذف‌شده‌های مشتری، سفارش و همکار فقط از سرور می‌آیند و در صف تغییری نمی‌کنند
+      deletedCustomers: [...(raw.deletedCustomers || [])],
+      deletedOrders: [...(raw.deletedOrders || [])],
+      deletedStaff: [...(raw.deletedStaff || [])],
       settings: { ...(raw.settings || {}) },
     };
     for (const op of ops) {

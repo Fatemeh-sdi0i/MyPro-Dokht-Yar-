@@ -18,7 +18,9 @@
     "test:export-server": "node --test server.export.test.js server.export.real.test.js",
     "test:compat": "node --test browser.compat.test.js",
     "test:restore-server": "node --test server.restore.test.js server.restore.real.test.js",
-    "test:undo": "node --test transactions.undo.test.js"
+    "test:undo": "node --test transactions.undo.test.js",
+    "test:undo-server": "node --test server.undo.test.js",
+    "test:undo-server-real": "node --test server.undo.real.test.js"
   },
   "devDependencies": {
     "playwright": "1.47.2"
