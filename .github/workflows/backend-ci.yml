@@ -206,6 +206,7 @@ jobs:
           npm run test:restore-server
           npm run test:undo
           npm run test:undo-server
+          npm run test:undo-server-real
 
       - name: Show server log on failure
         if: failure()
