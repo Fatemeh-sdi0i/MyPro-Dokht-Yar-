@@ -1631,6 +1631,7 @@ async function bootLocal() {
   renderBackupReminder();
   $("#recoveryImport").addEventListener("click", importLegacyData);
   $("#recoveryUndo").addEventListener("click", undoRecovery);
+  refreshPersistence(); // درخواست ماندگاری؛ غیرهمزمان و بدون توقف برنامه
   if (st.locked) {
     showLocalLock(st);
     return;
@@ -1666,6 +1667,20 @@ function renderSessionBanner(on, text) {
   const banner = $("#sessionBanner");
   banner.hidden = !on;
   $("#sessionBannerText").textContent = text;
+}
+
+// وضعیت ماندگاری داده در بخش «داده‌ها» تنظیمات (فقط حالت محلی)
+const PERSIST_TEXT = {
+  granted: "ماندگاری داده: فعال است. مرورگر داده را خودکار پاک نمی‌کند؛ با این حال پشتیبان JSON را منظم نگه دارید.",
+  denied: "ماندگاری داده: مرورگر اجازه‌ی ماندگاری دائمی نداد. داده ممکن است در شرایط کمبود فضا پاک شود؛ پشتیبان JSON را منظم دانلود کنید.",
+  unsupported: "ماندگاری داده: این مرورگر درخواست ماندگاری را پشتیبانی نمی‌کند. پشتیبان JSON را منظم دانلود کنید.",
+};
+async function refreshPersistence() {
+  const info = await LocalStore.requestPersistence();
+  const el = $("#persistText");
+  if (!el) return;
+  el.textContent = PERSIST_TEXT[!info.supported ? "unsupported" : info.persisted ? "granted" : "denied"];
+  el.hidden = false;
 }
 
 // بخش بازیابی: داده‌ی قدیمی مانده یا پشتیبان موجود است
