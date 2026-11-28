@@ -146,7 +146,8 @@ test("سرور واقعی: بازگردانی مشتری سفارش‌ها را 
   await page.click('.nav-item[data-page="orders"]');
   await orderBtn(page, "data-delete-order", o2.id).waitFor({ timeout: 8000 });
   await orderBtn(page, "data-delete-order", o2.id).click();
-  await orderBtn(page, "data-restore-order", o2.id).waitFor({ timeout: 8000 });
+  // بخش حذف‌شده‌ها بسته است؛ دکمه‌ی بازگردانی پیش از باز شدن پنهان است
+  await orderBtn(page, "data-restore-order", o2.id).waitFor({ state: "attached", timeout: 8000 });
 
   // مشتری حذف و بازگردانی می‌شود
   await page.click('.nav-item[data-page="customers"]');
